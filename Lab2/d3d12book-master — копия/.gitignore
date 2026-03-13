@@ -1,0 +1,114 @@
+############################
+# Operating System Files
+############################
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Mac
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+############################
+# Visual Studio
+############################
+
+.vs/
+**/.vs/
+
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+############################
+# Build Results
+############################
+
+Debug/
+Release/
+x64/
+x86/
+build/
+out/
+
+**/Debug/
+**/Release/
+**/x64/
+**/x86/
+
+############################
+# Visual Studio Cache
+############################
+
+ipch/
+*.VC.db
+*.VC.opendb
+*.opensdf
+*.sdf
+
+############################
+# IntelliSense
+############################
+
+*.ipch
+
+############################
+# Temporary files
+############################
+
+*.log
+*.tmp
+*.temp
+
+############################
+# CMake
+############################
+
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+############################
+# Visual Studio Code
+############################
+
+.vscode/
+
+############################
+# NuGet
+############################
+
+packages/
+
+############################
+# GPU / graphics temporary
+############################
+
+*.obj
+*.pdb
+*.ilk
+*.idb
+
+############################
+# DirectX intermediate
+############################
+
+*.dds~
+*.tga~
+
+############################
+# Optional large assets
+############################
+
+# Uncomment if needed
+# *.tga
+# *.png
+# *.dds
+# *.obj
