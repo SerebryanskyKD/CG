@@ -55,6 +55,11 @@ struct RenderItem
     int BaseVertexLocation = 0;
 };
 
+struct InstanceData
+{
+	XMFLOAT4X4 World;
+};
+
 enum class RenderLayer : int
 {
 	Opaque = 0,
@@ -176,6 +181,9 @@ private:
 	std::unordered_map<std::string, UINT> mTextureSrvHeapIndices;
 	std::vector<std::string> mOrderedTextureNames;
 	UINT mGBufferSrvHeapOffset = 0;
+
+	std::vector<XMFLOAT3> mGarlandPositions;
+	ComPtr<ID3D12Resource> mInstanceBuffer;
 };
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
@@ -273,6 +281,23 @@ bool TexWavesApp::Initialize()
 
     // Wait until initialization is complete.
     FlushCommandQueue();
+
+	const int GarlandLights = 500;
+
+	float startX = -120.0f;
+	float endX = 120.0f;
+
+	float y = 6.0f;
+	float z = 0.0f;
+
+	float step = (endX - startX) / GarlandLights*100;
+
+	for (int i = 0; i < GarlandLights; i++)
+	{
+		float x = startX + i * step;
+
+		mGarlandPositions.push_back({ x,y,z });
+	}
 
     return true;
 }
@@ -698,6 +723,18 @@ void TexWavesApp::UpdateMainPassCB(const GameTimer& gt)
 
 	auto currPassCB = mCurrFrameResource->PassCB.get();
 	currPassCB->CopyData(0, mMainPassCB);
+
+	for (int i = 0; i < mGarlandPositions.size(); i++)
+	{
+		auto& L = mMainPassCB.Lights[i];
+
+		L.Position = mGarlandPositions[i];
+
+		L.Strength = { 0.001f, 0.001f, 0.001f };
+
+		L.FalloffStart = 0.001f;
+		L.FalloffEnd = 0.01f;
+	}
 }
 
 void TexWavesApp::UpdateWaves(const GameTimer& gt)
@@ -1453,6 +1490,41 @@ void TexWavesApp::BuildRenderItems()
 	boxRitem->BaseVertexLocation = boxRitem->Geo->DrawArgs["box"].BaseVertexLocation;
 
 	//mRitemLayer[(int)RenderLayer::Opaque].push_back(boxRitem.get());
+
+	const int GarlandLights = mGarlandPositions.size();
+
+	for (int i = 0; i < GarlandLights; i++)
+	{
+		auto lightRitem = std::make_unique<RenderItem>();
+
+		XMMATRIX world =
+			XMMatrixScaling(0.05f, 0.05f, 0.05f) *
+			XMMatrixTranslation(
+				mGarlandPositions[i].x,
+				mGarlandPositions[i].y,
+				mGarlandPositions[i].z);
+
+		XMStoreFloat4x4(&lightRitem->World, world);
+
+		lightRitem->ObjCBIndex = 3 + i;
+
+		lightRitem->Mat = mMaterials["wirefence"].get();
+
+		lightRitem->Geo = mGeometries["boxGeo"].get();
+
+		lightRitem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+
+		lightRitem->IndexCount =
+			lightRitem->Geo->DrawArgs["box"].IndexCount;
+
+		lightRitem->StartIndexLocation =
+			lightRitem->Geo->DrawArgs["box"].StartIndexLocation;
+
+		lightRitem->BaseVertexLocation =
+			lightRitem->Geo->DrawArgs["box"].BaseVertexLocation;
+
+		mAllRitems.push_back(std::move(lightRitem));
+	}
 
     mAllRitems.push_back(std::move(wavesRitem));
     mAllRitems.push_back(std::move(gridRitem));
