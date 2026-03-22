@@ -21,23 +21,14 @@ using namespace DirectX::PackedVector;
 
 const int gNumFrameResources = 3;
 
-// Lightweight structure stores parameters to draw a shape.  This will
-// vary from app-to-app.
 struct RenderItem
 {
 	RenderItem() = default;
- 
-    // World matrix of the shape that describes the object's local space
-    // relative to the world space, which defines the position, orientation,
-    // and scale of the object in the world.
-    XMFLOAT4X4 World = MathHelper::Identity4x4();
+
+	XMFLOAT4X4 World = MathHelper::Identity4x4();
 
 	XMFLOAT4X4 TexTransform = MathHelper::Identity4x4();
 
-	// Dirty flag indicating the object data has changed and we need to update the constant buffer.
-	// Because we have an object cbuffer for each FrameResource, we have to apply the
-	// update to each FrameResource.  Thus, when we modify obect data we should set 
-	// NumFramesDirty = gNumFrameResources so that each frame resource gets the update.
 	int NumFramesDirty = gNumFrameResources;
 
 	// Index into GPU constant buffer corresponding to the ObjectCB for this render item.
@@ -46,18 +37,13 @@ struct RenderItem
 	Material* Mat = nullptr;
 	MeshGeometry* Geo = nullptr;
 
-    // Primitive topology.
-    D3D12_PRIMITIVE_TOPOLOGY PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	// Primitive topology.
+	D3D12_PRIMITIVE_TOPOLOGY PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 
-    // DrawIndexedInstanced parameters.
-    UINT IndexCount = 0;
-    UINT StartIndexLocation = 0;
-    int BaseVertexLocation = 0;
-};
-
-struct InstanceData
-{
-	XMFLOAT4X4 World;
+	// DrawIndexedInstanced parameters.
+	UINT IndexCount = 0;
+	UINT StartIndexLocation = 0;
+	int BaseVertexLocation = 0;
 };
 
 enum class RenderLayer : int
@@ -69,64 +55,65 @@ enum class RenderLayer : int
 class TexWavesApp : public D3DApp
 {
 public:
-    TexWavesApp(HINSTANCE hInstance);
-    TexWavesApp(const TexWavesApp& rhs) = delete;
-    TexWavesApp& operator=(const TexWavesApp& rhs) = delete;
-    ~TexWavesApp();
+	TexWavesApp(HINSTANCE hInstance);
+	TexWavesApp(const TexWavesApp& rhs) = delete;
+	TexWavesApp& operator=(const TexWavesApp& rhs) = delete;
+	~TexWavesApp();
 
-    virtual bool Initialize()override;
+	virtual bool Initialize()override;
 
 private:
-    virtual void OnResize()override;
-    virtual void Update(const GameTimer& gt)override;
-    virtual void Draw(const GameTimer& gt)override;
+	virtual void OnResize()override;
+	virtual void Update(const GameTimer& gt)override;
+	virtual void Draw(const GameTimer& gt)override;
 
-    virtual void OnMouseDown(WPARAM btnState, int x, int y)override;
-    virtual void OnMouseUp(WPARAM btnState, int x, int y)override;
-    virtual void OnMouseMove(WPARAM btnState, int x, int y)override;
+	virtual void OnMouseDown(WPARAM btnState, int x, int y)override;
+	virtual void OnMouseUp(WPARAM btnState, int x, int y)override;
+	virtual void OnMouseMove(WPARAM btnState, int x, int y)override;
 
-    void OnKeyboardInput(const GameTimer& gt);
+	void OnKeyboardInput(const GameTimer& gt);
 	void UpdateCamera(const GameTimer& gt);
 	void AnimateMaterials(const GameTimer& gt);
 	void UpdateObjectCBs(const GameTimer& gt);
 	void UpdateMaterialCBs(const GameTimer& gt);
 	void UpdateMainPassCB(const GameTimer& gt);
-	void UpdateWaves(const GameTimer& gt); 
+	void UpdateWaves(const GameTimer& gt);
 
 	void LoadTextures();
-    void BuildRootSignature();
+	void BuildRootSignature();
 	void BuildDescriptorHeaps();
 	void BuildGBufferDescriptorHeaps();
 	void BuildDebugRootSignature();
-    void BuildShadersAndInputLayout();
-    void BuildLandGeometry();
-    void BuildWavesGeometry();
+	void BuildShadersAndInputLayout();
+	void BuildLandGeometry();
+	void BuildWavesGeometry();
 	void BuildBoxGeometry();
 	void BuildSponzaGeometry();
+	void BuildLightSphereGeometry();
 	void BuildSponzaMaterials();
 	void BuildSponzaRenderItems();
-    void BuildPSOs();
-    void BuildFrameResources();
-    void BuildMaterials();
-    void BuildRenderItems();
-    void DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems);
+	void BuildPSOs();
+	void BuildFrameResources();
+	void BuildMaterials();
+	void BuildRenderItems();
+	void DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems);
 	void BuildLightingRootSignature();
 	void LoadSponzaTextures();
 
 	std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> GetStaticSamplers();
 
-    float GetHillsHeight(float x, float z)const;
-    XMFLOAT3 GetHillsNormal(float x, float z)const;
+	float GetHillsHeight(float x, float z)const;
+	XMFLOAT3 GetHillsNormal(float x, float z)const;
 
 private:
 
-    std::vector<std::unique_ptr<FrameResource>> mFrameResources;
-    FrameResource* mCurrFrameResource = nullptr;
-    int mCurrFrameResourceIndex = 0;
+	std::vector<std::unique_ptr<FrameResource>> mFrameResources;
+	FrameResource* mCurrFrameResource = nullptr;
+	int mCurrFrameResourceIndex = 0;
 
-    UINT mCbvSrvDescriptorSize = 0;
+	UINT mCbvSrvDescriptorSize = 0;
 
-    ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
+	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
 
@@ -146,9 +133,9 @@ private:
 	std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> mPSOs;
 	std::unique_ptr<RenderingSystem> mRenderingSystem;
 
-    std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
- 
-    RenderItem* mWavesRitem = nullptr;
+	std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
+
+	RenderItem* mWavesRitem = nullptr;
 
 	// List of all the render items.
 	std::vector<std::unique_ptr<RenderItem>> mAllRitems;
@@ -158,7 +145,7 @@ private:
 
 	std::unique_ptr<Waves> mWaves;
 
-    PassConstants mMainPassCB;
+	PassConstants mMainPassCB;
 
 	XMFLOAT3 mEyePos = { 0.0f, 8.0f, -25.0f };
 	XMFLOAT4X4 mView = MathHelper::Identity4x4();
@@ -182,8 +169,7 @@ private:
 	std::vector<std::string> mOrderedTextureNames;
 	UINT mGBufferSrvHeapOffset = 0;
 
-	std::vector<XMFLOAT3> mGarlandPositions;
-	ComPtr<ID3D12Resource> mInstanceBuffer;
+	std::vector<DirectX::XMFLOAT3> mGarlandColors;
 };
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
@@ -215,27 +201,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
 }
 
 TexWavesApp::TexWavesApp(HINSTANCE hInstance)
-    : D3DApp(hInstance)
+	: D3DApp(hInstance)
 {
 }
 
 TexWavesApp::~TexWavesApp()
 {
-    if(md3dDevice != nullptr)
-        FlushCommandQueue();
+	if (md3dDevice != nullptr)
+		FlushCommandQueue();
 }
 
 bool TexWavesApp::Initialize()
 {
-    if(!D3DApp::Initialize())
-        return false;
+	if (!D3DApp::Initialize())
+		return false;
 
-    // Reset the command list to prep for initialization commands.
-    ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
+	// Reset the command list to prep for initialization commands.
+	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
 
-    // Get the increment size of a descriptor in this heap type.  This is hardware specific, 
+	// Get the increment size of a descriptor in this heap type.  This is hardware specific, 
 	// so we have to query this information.
-    mCbvSrvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	mCbvSrvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	mRenderingSystem = std::make_unique<RenderingSystem>();
 	mRenderingSystem->Initialize(
 		md3dDevice.Get(),
@@ -247,8 +233,8 @@ bool TexWavesApp::Initialize()
 		mDsvDescriptorSize,
 		mCbvSrvDescriptorSize);
 
-    mWaves = std::make_unique<Waves>(128, 128, 1.0f, 0.03f, 4.0f, 0.2f);
- 
+	mWaves = std::make_unique<Waves>(128, 128, 1.0f, 0.03f, 4.0f, 0.2f);
+
 	LoadTextures();
 	BuildSponzaGeometry();
 	LoadSponzaTextures();
@@ -264,6 +250,7 @@ bool TexWavesApp::Initialize()
 	BuildLandGeometry();
 	BuildWavesGeometry();
 	BuildBoxGeometry();
+	BuildLightSphereGeometry();
 
 	BuildMaterials();
 	BuildSponzaMaterials();
@@ -274,41 +261,24 @@ bool TexWavesApp::Initialize()
 	BuildFrameResources();
 	BuildPSOs();
 
-    // Execute the initialization commands.
-    ThrowIfFailed(mCommandList->Close());
-    ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
-    mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
+	// Execute the initialization commands.
+	ThrowIfFailed(mCommandList->Close());
+	ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
+	mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
 
-    // Wait until initialization is complete.
-    FlushCommandQueue();
+	// Wait until initialization is complete.
+	FlushCommandQueue();
 
-	const int GarlandLights = 500;
-
-	float startX = -120.0f;
-	float endX = 120.0f;
-
-	float y = 6.0f;
-	float z = 0.0f;
-
-	float step = (endX - startX) / GarlandLights*100;
-
-	for (int i = 0; i < GarlandLights; i++)
-	{
-		float x = startX + i * step;
-
-		mGarlandPositions.push_back({ x,y,z });
-	}
-
-    return true;
+	return true;
 }
- 
+
 void TexWavesApp::OnResize()
 {
-    D3DApp::OnResize();
+	D3DApp::OnResize();
 
-    // The window resized, so update the aspect ratio and recompute the projection matrix.
-    XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f*MathHelper::Pi, AspectRatio(), 1.0f, 1000.0f);
-    XMStoreFloat4x4(&mProj, P);
+	// The window resized, so update the aspect ratio and recompute the projection matrix.
+	XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f * MathHelper::Pi, AspectRatio(), 1.0f, 1000.0f);
+	XMStoreFloat4x4(&mProj, P);
 	if (mRenderingSystem)
 	{
 		mRenderingSystem->OnResize(mClientWidth, mClientHeight);
@@ -317,28 +287,28 @@ void TexWavesApp::OnResize()
 
 void TexWavesApp::Update(const GameTimer& gt)
 {
-    OnKeyboardInput(gt);
+	OnKeyboardInput(gt);
 	UpdateCamera(gt);
 
-    // Cycle through the circular frame resource array.
-    mCurrFrameResourceIndex = (mCurrFrameResourceIndex + 1) % gNumFrameResources;
-    mCurrFrameResource = mFrameResources[mCurrFrameResourceIndex].get();
+	// Cycle through the circular frame resource array.
+	mCurrFrameResourceIndex = (mCurrFrameResourceIndex + 1) % gNumFrameResources;
+	mCurrFrameResource = mFrameResources[mCurrFrameResourceIndex].get();
 
-    // Has the GPU finished processing the commands of the current frame resource?
-    // If not, wait until the GPU has completed commands up to this fence point.
-    if(mCurrFrameResource->Fence != 0 && mFence->GetCompletedValue() < mCurrFrameResource->Fence)
-    {
-        HANDLE eventHandle = CreateEventEx(nullptr, false, false, EVENT_ALL_ACCESS);
-        ThrowIfFailed(mFence->SetEventOnCompletion(mCurrFrameResource->Fence, eventHandle));
-        WaitForSingleObject(eventHandle, INFINITE);
-        CloseHandle(eventHandle);
-    }
+	// Has the GPU finished processing the commands of the current frame resource?
+	// If not, wait until the GPU has completed commands up to this fence point.
+	if (mCurrFrameResource->Fence != 0 && mFence->GetCompletedValue() < mCurrFrameResource->Fence)
+	{
+		HANDLE eventHandle = CreateEventEx(nullptr, false, false, EVENT_ALL_ACCESS);
+		ThrowIfFailed(mFence->SetEventOnCompletion(mCurrFrameResource->Fence, eventHandle));
+		WaitForSingleObject(eventHandle, INFINITE);
+		CloseHandle(eventHandle);
+	}
 
 	AnimateMaterials(gt);
 	UpdateObjectCBs(gt);
 	UpdateMaterialCBs(gt);
 	UpdateMainPassCB(gt);
-    UpdateWaves(gt);
+	UpdateWaves(gt);
 }
 
 void TexWavesApp::Draw(const GameTimer& gt)
@@ -353,9 +323,6 @@ void TexWavesApp::Draw(const GameTimer& gt)
 
 	auto& gbuffer = mRenderingSystem->GetGBuffer();
 
-	//
-	// PASS 1: Geometry -> GBuffer
-	//
 	mCommandList->SetPipelineState(mPSOs["gbuffer"].Get());
 
 	gbuffer.TransitionToWrite(mCommandList.Get());
@@ -376,9 +343,6 @@ void TexWavesApp::Draw(const GameTimer& gt)
 
 	gbuffer.TransitionToRead(mCommandList.Get());
 
-	//
-	// PASS 2: Deferred Lighting -> BackBuffer
-	//
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
 		CurrentBackBuffer(),
 		D3D12_RESOURCE_STATE_PRESENT,
@@ -456,7 +420,7 @@ void TexWavesApp::OnMouseMove(WPARAM btnState, int x, int y)
 	mLastMousePos.x = x;
 	mLastMousePos.y = y;
 }
- 
+
 void TexWavesApp::OnKeyboardInput(const GameTimer& gt)
 {
 	if (!mMouseLookActive)
@@ -503,7 +467,7 @@ void TexWavesApp::OnKeyboardInput(const GameTimer& gt)
 
 	XMStoreFloat3(&mEyePos, pos);
 }
- 
+
 void TexWavesApp::UpdateCamera(const GameTimer& gt)
 {
 	UNREFERENCED_PARAMETER(gt);
@@ -527,7 +491,6 @@ void TexWavesApp::UpdateCamera(const GameTimer& gt)
 
 void TexWavesApp::AnimateMaterials(const GameTimer& gt)
 {
-	// Scroll the water material texture coordinates.
 	auto waterMat = mMaterials["water"].get();
 
 	float& tu = waterMat->MatTransform(3, 0);
@@ -536,27 +499,24 @@ void TexWavesApp::AnimateMaterials(const GameTimer& gt)
 	tu += 0.1f * gt.DeltaTime();
 	tv += 0.02f * gt.DeltaTime();
 
-	if(tu >= 1.0f)
+	if (tu >= 1.0f)
 		tu -= 1.0f;
 
-	if(tv >= 1.0f)
+	if (tv >= 1.0f)
 		tv -= 1.0f;
 
 	waterMat->MatTransform(3, 0) = tu;
 	waterMat->MatTransform(3, 1) = tv;
 
-	// Material has changed, so need to update cbuffer.
 	waterMat->NumFramesDirty = gNumFrameResources;
 }
 
 void TexWavesApp::UpdateObjectCBs(const GameTimer& gt)
 {
 	auto currObjectCB = mCurrFrameResource->ObjectCB.get();
-	for(auto& e : mAllRitems)
+	for (auto& e : mAllRitems)
 	{
-		// Only update the cbuffer data if the constants have changed.  
-		// This needs to be tracked per frame resource.
-		if(e->NumFramesDirty > 0)
+		if (e->NumFramesDirty > 0)
 		{
 			XMMATRIX world = XMLoadFloat4x4(&e->World);
 			XMMATRIX texTransform = XMLoadFloat4x4(&e->TexTransform);
@@ -576,12 +536,10 @@ void TexWavesApp::UpdateObjectCBs(const GameTimer& gt)
 void TexWavesApp::UpdateMaterialCBs(const GameTimer& gt)
 {
 	auto currMaterialCB = mCurrFrameResource->MaterialCB.get();
-	for(auto& e : mMaterials)
+	for (auto& e : mMaterials)
 	{
-		// Only update the cbuffer data if the constants have changed.  If the cbuffer
-		// data changes, it needs to be updated for each FrameResource.
 		Material* mat = e.second.get();
-		if(mat->NumFramesDirty > 0)
+		if (mat->NumFramesDirty > 0)
 		{
 			XMMATRIX matTransform = XMLoadFloat4x4(&mat->MatTransform);
 
@@ -624,12 +582,8 @@ void TexWavesApp::UpdateMainPassCB(const GameTimer& gt)
 	mMainPassCB.TotalTime = gt.TotalTime();
 	mMainPassCB.DeltaTime = gt.DeltaTime();
 
-	// Brighter base light so the whole Sponza is readable.
 	mMainPassCB.AmbientLight = { 0.32f, 0.32f, 0.34f, 1.0f };
 
-	//
-	// Directional lights [0..2]
-	//
 	mMainPassCB.Lights[0].Direction = { 0.45f, -0.70f, 0.55f };
 	mMainPassCB.Lights[0].Strength = { 0.85f, 0.85f, 0.82f };
 
@@ -639,109 +593,120 @@ void TexWavesApp::UpdateMainPassCB(const GameTimer& gt)
 	mMainPassCB.Lights[2].Direction = { 0.15f, -0.80f, -0.55f };
 	mMainPassCB.Lights[2].Strength = { 0.20f, 0.20f, 0.22f };
 
+	//const int kFirstPointLight = 3;
+	//const int kPointLightCount = 32;
+	//const int kFirstSpotLight = kFirstPointLight + kPointLightCount; // 35
+
+	for (int i = 0; i < MaxLights; ++i)
+	{
+		mMainPassCB.Lights[i].Strength = { 0.0f, 0.0f, 0.0f };
+		mMainPassCB.Lights[i].FalloffStart = 0.0f;
+		mMainPassCB.Lights[i].Direction = { 0.0f, -1.0f, 0.0f };
+		mMainPassCB.Lights[i].FalloffEnd = 0.0f;
+		mMainPassCB.Lights[i].Position = { 0.0f, 0.0f, 0.0f };
+		mMainPassCB.Lights[i].SpotPower = 1.0f;
+	}
+
+	// ------------------------------------------------------------
+	// Ambient
+	// ------------------------------------------------------------
+	mMainPassCB.AmbientLight = { 0.22f, 0.22f, 0.25f, 1.0f };
+
+	mMainPassCB.Lights[0].Direction = { 0.57735f, -0.57735f, 0.57735f };
+	mMainPassCB.Lights[0].Strength = { 1.1f, 1.1f, 1.0f };
+
+	mMainPassCB.Lights[1].Direction = { -0.57735f, -0.57735f, 0.57735f };
+	mMainPassCB.Lights[1].Strength = { 0.45f, 0.45f, 0.40f };
+
+	mMainPassCB.Lights[2].Direction = { 0.0f, -0.707f, -0.707f };
+	mMainPassCB.Lights[2].Strength = { 0.30f, 0.30f, 0.35f };
+
+	// ------------------------------------------------------------
+	// Garland point lights
+	// ------------------------------------------------------------
+	const int kFirstPointLight = 3;
+	const int kPointLightCount = 32;
+	const int kFirstSpotLight = 35;
+
+	assert(kFirstSpotLight + 3 < MaxLights);
+
+	// Ёти координаты потом подгонишь под свои колонны
+	const DirectX::XMFLOAT3 startP = { -6.5f, 8.8f, 1.0f };
+	const DirectX::XMFLOAT3 endP = { 6.5f, 8.8f, 1.0f };
+
+	for (int i = 0; i < kPointLightCount; ++i)
+	{
+		float u = (float)i / (float)(kPointLightCount - 1);
+
+		float x = startP.x + (endP.x - startP.x) * u;
+		float z = startP.z + (endP.z - startP.z) * u;
+		float sag = 0.7f * sinf(u * XM_PI);
+		float y = startP.y - sag;
+
+		int idx = kFirstPointLight + i;
+
+		mMainPassCB.Lights[idx].Position = { x, y, z };
+		auto c = mGarlandColors[i];
+
+		mMainPassCB.Lights[idx].Strength =
+		{
+			c.x * 10.5f,
+			c.y * 10.5f,
+			c.z * 10.5f
+		};
+		mMainPassCB.Lights[idx].FalloffStart = 0.0f;
+		mMainPassCB.Lights[idx].FalloffEnd = 1.0f;
+	}
+
+	// ------------------------------------------------------------
+	// Spot lights
+	// ------------------------------------------------------------
+
 	const float t = gt.TotalTime();
 
-	//
-	// Point lights [3..10] Ч spread much wider
-	//
-	mMainPassCB.Lights[3].Position = { -35.0f, 6.0f,  25.0f };
-	mMainPassCB.Lights[3].Strength = { 16.0f, 2.0f, 2.0f };
-	mMainPassCB.Lights[3].FalloffStart = 2.0f;
-	mMainPassCB.Lights[3].FalloffEnd = 26.0f;
+	mMainPassCB.Lights[kFirstSpotLight + 0].Position = { 0.0f, 18.0f, 48.0f };
+	mMainPassCB.Lights[kFirstSpotLight + 0].Direction = { 0.0f, -0.35f, -1.0f };
+	mMainPassCB.Lights[kFirstSpotLight + 0].Strength = { 22.0f, 22.0f, 22.0f };
+	mMainPassCB.Lights[kFirstSpotLight + 0].FalloffStart = 2.0f;
+	mMainPassCB.Lights[kFirstSpotLight + 0].FalloffEnd = 58.0f;
+	mMainPassCB.Lights[kFirstSpotLight + 0].SpotPower = 56.0f;
 
-	mMainPassCB.Lights[4].Position = { 35.0f, 6.0f,  25.0f };
-	mMainPassCB.Lights[4].Strength = { 2.0f, 16.0f, 2.0f };
-	mMainPassCB.Lights[4].FalloffStart = 2.0f;
-	mMainPassCB.Lights[4].FalloffEnd = 26.0f;
+	mMainPassCB.Lights[kFirstSpotLight + 1].Position = { -48.0f, 16.0f, 0.0f };
+	mMainPassCB.Lights[kFirstSpotLight + 1].Direction = { 1.0f, -0.28f, 0.0f };
+	mMainPassCB.Lights[kFirstSpotLight + 1].Strength = { 20.0f, 16.0f, 12.0f };
+	mMainPassCB.Lights[kFirstSpotLight + 1].FalloffStart = 2.0f;
+	mMainPassCB.Lights[kFirstSpotLight + 1].FalloffEnd = 54.0f;
+	mMainPassCB.Lights[kFirstSpotLight + 1].SpotPower = 72.0f;
 
-	mMainPassCB.Lights[5].Position = { -35.0f, 6.0f, -25.0f };
-	mMainPassCB.Lights[5].Strength = { 2.0f, 2.0f, 16.0f };
-	mMainPassCB.Lights[5].FalloffStart = 2.0f;
-	mMainPassCB.Lights[5].FalloffEnd = 26.0f;
+	mMainPassCB.Lights[kFirstSpotLight + 2].Position = { 0.0f, 24.0f, 0.0f };
+	mMainPassCB.Lights[kFirstSpotLight + 2].Direction = { cosf(0.55f * t), -0.60f, sinf(0.55f * t) };
+	mMainPassCB.Lights[kFirstSpotLight + 2].Strength = { 14.0f, 20.0f, 24.0f };
+	mMainPassCB.Lights[kFirstSpotLight + 2].FalloffStart = 2.0f;
+	mMainPassCB.Lights[kFirstSpotLight + 2].FalloffEnd = 56.0f;
+	mMainPassCB.Lights[kFirstSpotLight + 2].SpotPower = 48.0f;
 
-	mMainPassCB.Lights[6].Position = { 35.0f, 6.0f, -25.0f };
-	mMainPassCB.Lights[6].Strength = { 16.0f, 16.0f, 2.0f };
-	mMainPassCB.Lights[6].FalloffStart = 2.0f;
-	mMainPassCB.Lights[6].FalloffEnd = 26.0f;
+	mMainPassCB.Lights[kFirstSpotLight + 3].Position = { 48.0f, 20.0f, -40.0f };
+	mMainPassCB.Lights[kFirstSpotLight + 3].Direction = { -0.85f, -0.32f, 0.65f };
+	mMainPassCB.Lights[kFirstSpotLight + 3].Strength = { 24.0f, 10.0f, 10.0f };
+	mMainPassCB.Lights[kFirstSpotLight + 3].FalloffStart = 2.0f;
+	mMainPassCB.Lights[kFirstSpotLight + 3].FalloffEnd = 60.0f;
+	mMainPassCB.Lights[kFirstSpotLight + 3].SpotPower = 80.0f;
 
-	mMainPassCB.Lights[7].Position = { 45.0f * cosf(0.35f * t), 9.0f, 40.0f * sinf(0.35f * t) };
-	mMainPassCB.Lights[7].Strength = { 2.0f, 13.0f, 13.0f };
-	mMainPassCB.Lights[7].FalloffStart = 2.0f;
-	mMainPassCB.Lights[7].FalloffEnd = 30.0f;
-
-	mMainPassCB.Lights[8].Position = { 48.0f * cosf(-0.28f * t + 1.7f), 8.0f, 34.0f * sinf(-0.28f * t + 1.7f) };
-	mMainPassCB.Lights[8].Strength = { 13.0f, 2.0f, 13.0f };
-	mMainPassCB.Lights[8].FalloffStart = 2.0f;
-	mMainPassCB.Lights[8].FalloffEnd = 30.0f;
-
-	mMainPassCB.Lights[9].Position = { 0.0f, 10.0f, -42.0f };
-	mMainPassCB.Lights[9].Strength = { 10.0f, 10.0f, 10.0f };
-	mMainPassCB.Lights[9].FalloffStart = 2.0f;
-	mMainPassCB.Lights[9].FalloffEnd = 34.0f;
-
-	mMainPassCB.Lights[10].Position = { 42.0f, 8.0f, 0.0f };
-	mMainPassCB.Lights[10].Strength = { 14.0f, 8.0f, 3.5f };
-	mMainPassCB.Lights[10].FalloffStart = 2.0f;
-	mMainPassCB.Lights[10].FalloffEnd = 28.0f;
-
-	//
-	// Spot lights [11..14] Ч much farther apart
-	//
-	mMainPassCB.Lights[11].Position = { 0.0f, 18.0f, 48.0f };
-	mMainPassCB.Lights[11].Direction = { 0.0f, -0.35f, -1.0f };
-	mMainPassCB.Lights[11].Strength = { 22.0f, 22.0f, 22.0f };
-	mMainPassCB.Lights[11].FalloffStart = 2.0f;
-	mMainPassCB.Lights[11].FalloffEnd = 58.0f;
-	mMainPassCB.Lights[11].SpotPower = 56.0f;
-
-	mMainPassCB.Lights[12].Position = { -48.0f, 16.0f, 0.0f };
-	mMainPassCB.Lights[12].Direction = { 1.0f, -0.28f, 0.0f };
-	mMainPassCB.Lights[12].Strength = { 20.0f, 16.0f, 12.0f };
-	mMainPassCB.Lights[12].FalloffStart = 2.0f;
-	mMainPassCB.Lights[12].FalloffEnd = 54.0f;
-	mMainPassCB.Lights[12].SpotPower = 72.0f;
-
-	mMainPassCB.Lights[13].Position = { 0.0f, 24.0f, 0.0f };
-	mMainPassCB.Lights[13].Direction = { cosf(0.55f * t), -0.60f, sinf(0.55f * t) };
-	mMainPassCB.Lights[13].Strength = { 14.0f, 20.0f, 24.0f };
-	mMainPassCB.Lights[13].FalloffStart = 2.0f;
-	mMainPassCB.Lights[13].FalloffEnd = 56.0f;
-	mMainPassCB.Lights[13].SpotPower = 48.0f;
-
-	mMainPassCB.Lights[14].Position = { 48.0f, 20.0f, -40.0f };
-	mMainPassCB.Lights[14].Direction = { -0.85f, -0.32f, 0.65f };
-	mMainPassCB.Lights[14].Strength = { 24.0f, 10.0f, 10.0f };
-	mMainPassCB.Lights[14].FalloffStart = 2.0f;
-	mMainPassCB.Lights[14].FalloffEnd = 60.0f;
-	mMainPassCB.Lights[14].SpotPower = 80.0f;
-
-	for (int i = 11; i <= 14; ++i)
+	for (int i = 0; i < 4; ++i)
 	{
-		XMVECTOR dir = XMVector3Normalize(XMLoadFloat3(&mMainPassCB.Lights[i].Direction));
-		XMStoreFloat3(&mMainPassCB.Lights[i].Direction, dir);
+		XMVECTOR dir = XMLoadFloat3(&mMainPassCB.Lights[kFirstSpotLight + i].Direction);
+		dir = XMVector3Normalize(dir);
+		XMStoreFloat3(&mMainPassCB.Lights[kFirstSpotLight + i].Direction, dir);
 	}
 
 	auto currPassCB = mCurrFrameResource->PassCB.get();
 	currPassCB->CopyData(0, mMainPassCB);
-
-	for (int i = 0; i < mGarlandPositions.size(); i++)
-	{
-		auto& L = mMainPassCB.Lights[i];
-
-		L.Position = mGarlandPositions[i];
-
-		L.Strength = { 0.001f, 0.001f, 0.001f };
-
-		L.FalloffStart = 0.001f;
-		L.FalloffEnd = 0.01f;
-	}
 }
 
 void TexWavesApp::UpdateWaves(const GameTimer& gt)
 {
-	// Every quarter second, generate a random wave.
 	static float t_base = 0.0f;
-	if((mTimer.TotalTime() - t_base) >= 0.25f)
+	if ((mTimer.TotalTime() - t_base) >= 0.25f)
 	{
 		t_base += 0.25f;
 
@@ -758,22 +723,19 @@ void TexWavesApp::UpdateWaves(const GameTimer& gt)
 
 	// Update the wave vertex buffer with the new solution.
 	auto currWavesVB = mCurrFrameResource->WavesVB.get();
-	for(int i = 0; i < mWaves->VertexCount(); ++i)
+	for (int i = 0; i < mWaves->VertexCount(); ++i)
 	{
 		Vertex v;
 
 		v.Pos = mWaves->Position(i);
 		v.Normal = mWaves->Normal(i);
-		
-		// Derive tex-coords from position by 
-		// mapping [-w/2,w/2] --> [0,1]
+
 		v.TexC.x = 0.5f + v.Pos.x / mWaves->Width();
 		v.TexC.y = 0.5f - v.Pos.z / mWaves->Depth();
 
 		currWavesVB->CopyData(i, v);
 	}
 
-	// Set the dynamic VB of the wave renderitem to the current frame VB.
 	mWavesRitem->Geo->VertexBufferGPU = currWavesVB->Resource();
 }
 
@@ -811,39 +773,39 @@ void TexWavesApp::BuildRootSignature()
 	CD3DX12_DESCRIPTOR_RANGE texTable;
 	texTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
 
-    // Root parameter can be a table, root descriptor or root constants.
-    CD3DX12_ROOT_PARAMETER slotRootParameter[4];
+	// Root parameter can be a table, root descriptor or root constants.
+	CD3DX12_ROOT_PARAMETER slotRootParameter[4];
 
 	// Perfomance TIP: Order from most frequent to least frequent.
 	slotRootParameter[0].InitAsDescriptorTable(1, &texTable, D3D12_SHADER_VISIBILITY_PIXEL);
-    slotRootParameter[1].InitAsConstantBufferView(0);
-    slotRootParameter[2].InitAsConstantBufferView(1);
-    slotRootParameter[3].InitAsConstantBufferView(2);
+	slotRootParameter[1].InitAsConstantBufferView(0);
+	slotRootParameter[2].InitAsConstantBufferView(1);
+	slotRootParameter[3].InitAsConstantBufferView(2);
 
 	auto staticSamplers = GetStaticSamplers();
 
-    // A root signature is an array of root parameters.
+	// A root signature is an array of root parameters.
 	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(4, slotRootParameter,
 		(UINT)staticSamplers.size(), staticSamplers.data(),
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
-    // create a root signature with a single slot which points to a descriptor range consisting of a single constant buffer
-    ComPtr<ID3DBlob> serializedRootSig = nullptr;
-    ComPtr<ID3DBlob> errorBlob = nullptr;
-    HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
-        serializedRootSig.GetAddressOf(), errorBlob.GetAddressOf());
+	// create a root signature with a single slot which points to a descriptor range consisting of a single constant buffer
+	ComPtr<ID3DBlob> serializedRootSig = nullptr;
+	ComPtr<ID3DBlob> errorBlob = nullptr;
+	HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+		serializedRootSig.GetAddressOf(), errorBlob.GetAddressOf());
 
-    if(errorBlob != nullptr)
-    {
-        ::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
-    }
-    ThrowIfFailed(hr);
+	if (errorBlob != nullptr)
+	{
+		::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+	}
+	ThrowIfFailed(hr);
 
-    ThrowIfFailed(md3dDevice->CreateRootSignature(
+	ThrowIfFailed(md3dDevice->CreateRootSignature(
 		0,
-        serializedRootSig->GetBufferPointer(),
-        serializedRootSig->GetBufferSize(),
-        IID_PPV_ARGS(mRootSignature.GetAddressOf())));
+		serializedRootSig->GetBufferPointer(),
+		serializedRootSig->GetBufferSize(),
+		IID_PPV_ARGS(mRootSignature.GetAddressOf())));
 }
 
 void TexWavesApp::BuildDebugRootSignature()
@@ -955,40 +917,34 @@ void TexWavesApp::BuildShadersAndInputLayout()
 
 	mShaders["deferredLightVS"] = d3dUtil::CompileShader(L"Shaders\\DeferredLighting.hlsl", nullptr, "VS", "vs_5_0");
 	mShaders["deferredLightPS"] = d3dUtil::CompileShader(L"Shaders\\DeferredLighting.hlsl", nullptr, "PS", "ps_5_0");
-	
-    mInputLayout =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+
+	mInputLayout =
+	{
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
+	};
 }
 
 void TexWavesApp::BuildLandGeometry()
 {
-    GeometryGenerator geoGen;
-    GeometryGenerator::MeshData grid = geoGen.CreateGrid(160.0f, 160.0f, 50, 50);
+	GeometryGenerator geoGen;
+	GeometryGenerator::MeshData grid = geoGen.CreateGrid(160.0f, 160.0f, 50, 50);
 
-    //
-    // Extract the vertex elements we are interested and apply the height function to
-    // each vertex.  In addition, color the vertices based on their height so we have
-    // sandy looking beaches, grassy low hills, and snow mountain peaks.
-    //
-
-    std::vector<Vertex> vertices(grid.Vertices.size());
-    for(size_t i = 0; i < grid.Vertices.size(); ++i)
-    {
-        auto& p = grid.Vertices[i].Position;
-        vertices[i].Pos = p;
-        vertices[i].Pos.y = GetHillsHeight(p.x, p.z);
-        vertices[i].Normal = GetHillsNormal(p.x, p.z);
+	std::vector<Vertex> vertices(grid.Vertices.size());
+	for (size_t i = 0; i < grid.Vertices.size(); ++i)
+	{
+		auto& p = grid.Vertices[i].Position;
+		vertices[i].Pos = p;
+		vertices[i].Pos.y = GetHillsHeight(p.x, p.z);
+		vertices[i].Normal = GetHillsNormal(p.x, p.z);
 		vertices[i].TexC = grid.Vertices[i].TexC;
-    }
+	}
 
-    const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
+	const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
 
-    std::vector<std::uint16_t> indices = grid.GetIndices16();
-    const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
+	std::vector<std::uint16_t> indices = grid.GetIndices16();
+	const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
 
 	auto geo = std::make_unique<MeshGeometry>();
 	geo->Name = "landGeo";
@@ -1022,31 +978,31 @@ void TexWavesApp::BuildLandGeometry()
 
 void TexWavesApp::BuildWavesGeometry()
 {
-    std::vector<std::uint16_t> indices(3 * mWaves->TriangleCount()); // 3 indices per face
+	std::vector<std::uint16_t> indices(3 * mWaves->TriangleCount()); // 3 indices per face
 	assert(mWaves->VertexCount() < 0x0000ffff);
 
-    // Iterate over each quad.
-    int m = mWaves->RowCount();
-    int n = mWaves->ColumnCount();
-    int k = 0;
-    for(int i = 0; i < m - 1; ++i)
-    {
-        for(int j = 0; j < n - 1; ++j)
-        {
-            indices[k] = i*n + j;
-            indices[k + 1] = i*n + j + 1;
-            indices[k + 2] = (i + 1)*n + j;
+	// Iterate over each quad.
+	int m = mWaves->RowCount();
+	int n = mWaves->ColumnCount();
+	int k = 0;
+	for (int i = 0; i < m - 1; ++i)
+	{
+		for (int j = 0; j < n - 1; ++j)
+		{
+			indices[k] = i * n + j;
+			indices[k + 1] = i * n + j + 1;
+			indices[k + 2] = (i + 1) * n + j;
 
-            indices[k + 3] = (i + 1)*n + j;
-            indices[k + 4] = i*n + j + 1;
-            indices[k + 5] = (i + 1)*n + j + 1;
+			indices[k + 3] = (i + 1) * n + j;
+			indices[k + 4] = i * n + j + 1;
+			indices[k + 5] = (i + 1) * n + j + 1;
 
-            k += 6; // next quad
-        }
-    }
+			k += 6; // next quad
+		}
+	}
 
-	UINT vbByteSize = mWaves->VertexCount()*sizeof(Vertex);
-	UINT ibByteSize = (UINT)indices.size()*sizeof(std::uint16_t);
+	UINT vbByteSize = mWaves->VertexCount() * sizeof(Vertex);
+	UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
 
 	auto geo = std::make_unique<MeshGeometry>();
 	geo->Name = "waterGeo";
@@ -1125,9 +1081,66 @@ void TexWavesApp::BuildBoxGeometry()
 	mGeometries["boxGeo"] = std::move(geo);
 }
 
+void TexWavesApp::BuildLightSphereGeometry()
+{
+	GeometryGenerator geoGen;
+	GeometryGenerator::MeshData sphere = geoGen.CreateSphere(0.18f, 12, 12);
+	// 0.18f ~= размер "с кулак" после твоего масштаба сцены
+
+	std::vector<Vertex> vertices(sphere.Vertices.size());
+	for (size_t i = 0; i < sphere.Vertices.size(); ++i)
+	{
+		vertices[i].Pos = sphere.Vertices[i].Position;
+		vertices[i].Normal = sphere.Vertices[i].Normal;
+		vertices[i].TexC = sphere.Vertices[i].TexC;
+	}
+
+	const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
+
+	std::vector<std::uint16_t> indices = sphere.GetIndices16();
+	const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
+
+	auto geo = std::make_unique<MeshGeometry>();
+	geo->Name = "lightSphereGeo";
+
+	ThrowIfFailed(D3DCreateBlob(vbByteSize, &geo->VertexBufferCPU));
+	CopyMemory(geo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
+
+	ThrowIfFailed(D3DCreateBlob(ibByteSize, &geo->IndexBufferCPU));
+	CopyMemory(geo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
+
+	geo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(
+		md3dDevice.Get(),
+		mCommandList.Get(),
+		vertices.data(),
+		vbByteSize,
+		geo->VertexBufferUploader);
+
+	geo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(
+		md3dDevice.Get(),
+		mCommandList.Get(),
+		indices.data(),
+		ibByteSize,
+		geo->IndexBufferUploader);
+
+	geo->VertexByteStride = sizeof(Vertex);
+	geo->VertexBufferByteSize = vbByteSize;
+	geo->IndexFormat = DXGI_FORMAT_R16_UINT;
+	geo->IndexBufferByteSize = ibByteSize;
+
+	SubmeshGeometry submesh;
+	submesh.IndexCount = (UINT)indices.size();
+	submesh.StartIndexLocation = 0;
+	submesh.BaseVertexLocation = 0;
+
+	geo->DrawArgs["sphere"] = submesh;
+
+	mGeometries["lightSphereGeo"] = std::move(geo);
+}
+
 void TexWavesApp::BuildSponzaGeometry()
 {
-	std::filesystem::path objPath = L"C:/4 семестр/ √/d3d12book-master Ч копи€/Chapter 9 Texturing/TexWaves/x64/Release/sponza.obj";
+	std::filesystem::path objPath = L"C:/Users/theof/source/repos/CG/Lab2/d3d12book-master Ч копи€/Chapter 9 Texturing/TexWaves/x64/Debug/sponza.obj";
 
 	if (!std::filesystem::exists(objPath))
 	{
@@ -1256,14 +1269,15 @@ void TexWavesApp::BuildSponzaMaterials()
 
 void TexWavesApp::BuildSponzaRenderItems()
 {
+	// ------------------------------------------------------------
+	// 1) Sponza OBJ
+	// ------------------------------------------------------------
 	auto geo = mGeometries["sponzaGeo"].get();
 
 	for (const auto& sm : mSponzaModel.Submeshes)
 	{
 		auto ri = std::make_unique<RenderItem>();
 
-		// ѕодгони масштаб/позицию при необходимости.
-		// ƒл€ начала просто поставим в центр и немного уменьшим.
 		XMMATRIX world =
 			XMMatrixScaling(0.15f, 0.15f, 0.15f) *
 			XMMatrixTranslation(0.0f, 0.0f, 0.0f);
@@ -1288,25 +1302,90 @@ void TexWavesApp::BuildSponzaRenderItems()
 		mRitemLayer[(int)RenderLayer::Opaque].push_back(ri.get());
 		mAllRitems.push_back(std::move(ri));
 	}
+
+	// ------------------------------------------------------------
+	// 2) Garland of 500 small glowing spheres
+	// ------------------------------------------------------------
+	auto bulbGeo = mGeometries["lightSphereGeo"].get();
+	auto bulbMat = mMaterials["lightBulb"].get();
+
+	const int bulbCount = 500;
+
+	const XMFLOAT3 startP = XMFLOAT3(-30.5f, 40.8f, -40.0f);
+	const XMFLOAT3 endP = XMFLOAT3(30.5f, 40.8f, 40.0f);
+
+	mGarlandColors.clear();
+	mGarlandColors.reserve(bulbCount);
+
+	for (int i = 0; i < bulbCount; ++i)
+	{
+		float u = (bulbCount == 1) ? 0.0f : (float)i / (float)(bulbCount - 1);
+
+		float x = startP.x + (endP.x - startP.x) * u;
+		float z = startP.z + (endP.z - startP.z) * u;
+
+		float sag = 0.9f * sinf(u * XM_PI);
+		float y = startP.y - sag;
+
+		float hue = (float)i / bulbCount;
+
+		// проста€ HSV ? RGB (псевдо)
+		float r = fabsf(sinf(hue * XM_2PI));
+		float g = fabsf(sinf(hue * XM_2PI + 2.0f));
+		float b = fabsf(sinf(hue * XM_2PI + 4.0f));
+
+		// немного усилим насыщенность
+		r = powf(r, 0.5f);
+		g = powf(g, 0.5f);
+		b = powf(b, 0.5f);
+
+		mGarlandColors.push_back({ r, g, b });
+
+		auto ri = std::make_unique<RenderItem>();
+
+		XMMATRIX world = XMMatrixTranslation(x, y, z);
+		XMStoreFloat4x4(&ri->World, world);
+		XMStoreFloat4x4(&ri->TexTransform, XMMatrixIdentity());
+
+		ri->ObjCBIndex = (UINT)mAllRitems.size();
+		auto mat = std::make_unique<Material>();
+
+		mat->Name = "lightBulb_" + std::to_string(i);
+		mat->MatCBIndex = (UINT)mMaterials.size();
+		mat->DiffuseSrvHeapIndex = 0;
+		mat->DiffuseAlbedo = XMFLOAT4(r * 6.0f, g * 6.0f, b * 6.0f, 1.0f);
+		mat->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
+		mat->Roughness = 0.01f;
+
+		Material* matPtr = mat.get();
+		mMaterials[mat->Name] = std::move(mat);
+
+		ri->Mat = matPtr;
+		ri->Geo = bulbGeo;
+		ri->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+		ri->IndexCount = bulbGeo->DrawArgs["sphere"].IndexCount;
+		ri->StartIndexLocation = bulbGeo->DrawArgs["sphere"].StartIndexLocation;
+		ri->BaseVertexLocation = bulbGeo->DrawArgs["sphere"].BaseVertexLocation;
+
+		mRitemLayer[(int)RenderLayer::Opaque].push_back(ri.get());
+		mAllRitems.push_back(std::move(ri));
+	}
 }
 
 void TexWavesApp::BuildPSOs()
 {
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC opaquePsoDesc;
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC opaquePsoDesc;
 
-	//
-	// PSO for opaque objects.
-	//
-    ZeroMemory(&opaquePsoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
+	ZeroMemory(&opaquePsoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
 	opaquePsoDesc.InputLayout = { mInputLayout.data(), (UINT)mInputLayout.size() };
 	opaquePsoDesc.pRootSignature = mRootSignature.Get();
-	opaquePsoDesc.VS = 
-	{ 
-		reinterpret_cast<BYTE*>(mShaders["standardVS"]->GetBufferPointer()), 
+	opaquePsoDesc.VS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["standardVS"]->GetBufferPointer()),
 		mShaders["standardVS"]->GetBufferSize()
 	};
-	opaquePsoDesc.PS = 
-	{ 
+	opaquePsoDesc.PS =
+	{
 		reinterpret_cast<BYTE*>(mShaders["opaquePS"]->GetBufferPointer()),
 		mShaders["opaquePS"]->GetBufferSize()
 	};
@@ -1320,7 +1399,7 @@ void TexWavesApp::BuildPSOs()
 	opaquePsoDesc.SampleDesc.Count = m4xMsaaState ? 4 : 1;
 	opaquePsoDesc.SampleDesc.Quality = m4xMsaaState ? (m4xMsaaQuality - 1) : 0;
 	opaquePsoDesc.DSVFormat = mDepthStencilFormat;
-    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&opaquePsoDesc, IID_PPV_ARGS(&mPSOs["opaque"])));
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&opaquePsoDesc, IID_PPV_ARGS(&mPSOs["opaque"])));
 
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC gbufferPsoDesc = opaquePsoDesc;
 	gbufferPsoDesc.pRootSignature = mRootSignature.Get();
@@ -1339,6 +1418,9 @@ void TexWavesApp::BuildPSOs()
 	gbufferPsoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
 	gbufferPsoDesc.RTVFormats[2] = DXGI_FORMAT_R16G16_FLOAT;
 	gbufferPsoDesc.DSVFormat = mDepthStencilFormat;
+
+	// ¬ј∆Ќќ:
+	gbufferPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
 		&gbufferPsoDesc,
@@ -1409,11 +1491,11 @@ void TexWavesApp::BuildPSOs()
 
 void TexWavesApp::BuildFrameResources()
 {
-    for(int i = 0; i < gNumFrameResources; ++i)
-    {
-        mFrameResources.push_back(std::make_unique<FrameResource>(md3dDevice.Get(),
-            1, (UINT)mAllRitems.size(), (UINT)mMaterials.size(), mWaves->VertexCount()));
-    }
+	for (int i = 0; i < gNumFrameResources; ++i)
+	{
+		mFrameResources.push_back(std::make_unique<FrameResource>(md3dDevice.Get(),
+			1, (UINT)mAllRitems.size(), (UINT)mMaterials.size(), mWaves->VertexCount()));
+	}
 }
 
 void TexWavesApp::BuildMaterials()
@@ -1426,8 +1508,6 @@ void TexWavesApp::BuildMaterials()
 	grass->FresnelR0 = XMFLOAT3(0.01f, 0.01f, 0.01f);
 	grass->Roughness = 0.125f;
 
-	// This is not a good water material definition, but we do not have all the rendering
-	// tools we need (transparency, environment reflection), so we fake it for now.
 	auto water = std::make_unique<Material>();
 	water->Name = "water";
 	water->MatCBIndex = 1;
@@ -1444,15 +1524,24 @@ void TexWavesApp::BuildMaterials()
 	wirefence->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
 	wirefence->Roughness = 0.25f;
 
+	auto lightBulb = std::make_unique<Material>();
+	lightBulb->Name = "lightBulb";
+	lightBulb->MatCBIndex = 3;
+	lightBulb->DiffuseSrvHeapIndex = 0; // можно использовать любую существующую текстуру, нам важен цвет
+	lightBulb->DiffuseAlbedo = XMFLOAT4(8.0f, 7.2f, 5.5f, 1.0f); // €ркий тЄплый
+	lightBulb->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
+	lightBulb->Roughness = 0.02f;
+
 	mMaterials["grass"] = std::move(grass);
 	mMaterials["water"] = std::move(water);
 	mMaterials["wirefence"] = std::move(wirefence);
+	mMaterials["lightBulb"] = std::move(lightBulb);
 }
 
 void TexWavesApp::BuildRenderItems()
 {
-    auto wavesRitem = std::make_unique<RenderItem>();
-    wavesRitem->World = MathHelper::Identity4x4();
+	auto wavesRitem = std::make_unique<RenderItem>();
+	wavesRitem->World = MathHelper::Identity4x4();
 	XMStoreFloat4x4(&wavesRitem->TexTransform, XMMatrixScaling(5.0f, 5.0f, 1.0f));
 	wavesRitem->ObjCBIndex = 0;
 	wavesRitem->Mat = mMaterials["water"].get();
@@ -1462,22 +1551,18 @@ void TexWavesApp::BuildRenderItems()
 	wavesRitem->StartIndexLocation = wavesRitem->Geo->DrawArgs["grid"].StartIndexLocation;
 	wavesRitem->BaseVertexLocation = wavesRitem->Geo->DrawArgs["grid"].BaseVertexLocation;
 
-    mWavesRitem = wavesRitem.get();
+	mWavesRitem = wavesRitem.get();
 
-	//mRitemLayer[(int)RenderLayer::Opaque].push_back(wavesRitem.get());
-
-    auto gridRitem = std::make_unique<RenderItem>();
-    gridRitem->World = MathHelper::Identity4x4();
+	auto gridRitem = std::make_unique<RenderItem>();
+	gridRitem->World = MathHelper::Identity4x4();
 	XMStoreFloat4x4(&gridRitem->TexTransform, XMMatrixScaling(5.0f, 5.0f, 1.0f));
 	gridRitem->ObjCBIndex = 1;
 	gridRitem->Mat = mMaterials["grass"].get();
 	gridRitem->Geo = mGeometries["landGeo"].get();
 	gridRitem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-    gridRitem->IndexCount = gridRitem->Geo->DrawArgs["grid"].IndexCount;
-    gridRitem->StartIndexLocation = gridRitem->Geo->DrawArgs["grid"].StartIndexLocation;
-    gridRitem->BaseVertexLocation = gridRitem->Geo->DrawArgs["grid"].BaseVertexLocation;
-
-	//mRitemLayer[(int)RenderLayer::Opaque].push_back(gridRitem.get());
+	gridRitem->IndexCount = gridRitem->Geo->DrawArgs["grid"].IndexCount;
+	gridRitem->StartIndexLocation = gridRitem->Geo->DrawArgs["grid"].StartIndexLocation;
+	gridRitem->BaseVertexLocation = gridRitem->Geo->DrawArgs["grid"].BaseVertexLocation;
 
 	auto boxRitem = std::make_unique<RenderItem>();
 	XMStoreFloat4x4(&boxRitem->World, XMMatrixTranslation(3.0f, 2.0f, -9.0f));
@@ -1489,84 +1574,43 @@ void TexWavesApp::BuildRenderItems()
 	boxRitem->StartIndexLocation = boxRitem->Geo->DrawArgs["box"].StartIndexLocation;
 	boxRitem->BaseVertexLocation = boxRitem->Geo->DrawArgs["box"].BaseVertexLocation;
 
-	//mRitemLayer[(int)RenderLayer::Opaque].push_back(boxRitem.get());
-
-	const int GarlandLights = mGarlandPositions.size();
-
-	for (int i = 0; i < GarlandLights; i++)
-	{
-		auto lightRitem = std::make_unique<RenderItem>();
-
-		XMMATRIX world =
-			XMMatrixScaling(0.05f, 0.05f, 0.05f) *
-			XMMatrixTranslation(
-				mGarlandPositions[i].x,
-				mGarlandPositions[i].y,
-				mGarlandPositions[i].z);
-
-		XMStoreFloat4x4(&lightRitem->World, world);
-
-		lightRitem->ObjCBIndex = 3 + i;
-
-		lightRitem->Mat = mMaterials["wirefence"].get();
-
-		lightRitem->Geo = mGeometries["boxGeo"].get();
-
-		lightRitem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-
-		lightRitem->IndexCount =
-			lightRitem->Geo->DrawArgs["box"].IndexCount;
-
-		lightRitem->StartIndexLocation =
-			lightRitem->Geo->DrawArgs["box"].StartIndexLocation;
-
-		lightRitem->BaseVertexLocation =
-			lightRitem->Geo->DrawArgs["box"].BaseVertexLocation;
-
-		mAllRitems.push_back(std::move(lightRitem));
-	}
-
-    mAllRitems.push_back(std::move(wavesRitem));
-    mAllRitems.push_back(std::move(gridRitem));
+	mAllRitems.push_back(std::move(wavesRitem));
+	mAllRitems.push_back(std::move(gridRitem));
 	mAllRitems.push_back(std::move(boxRitem));
 }
 
 void TexWavesApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems)
 {
-    UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
-    UINT matCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(MaterialConstants));
+	UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+	UINT matCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(MaterialConstants));
 
 	auto objectCB = mCurrFrameResource->ObjectCB->Resource();
 	auto matCB = mCurrFrameResource->MaterialCB->Resource();
 
-    // For each render item...
-    for(size_t i = 0; i < ritems.size(); ++i)
-    {
-        auto ri = ritems[i];
+	for (size_t i = 0; i < ritems.size(); ++i)
+	{
+		auto ri = ritems[i];
 
-        cmdList->IASetVertexBuffers(0, 1, &ri->Geo->VertexBufferView());
-        cmdList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
-        cmdList->IASetPrimitiveTopology(ri->PrimitiveType);
+		cmdList->IASetVertexBuffers(0, 1, &ri->Geo->VertexBufferView());
+		cmdList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
+		cmdList->IASetPrimitiveTopology(ri->PrimitiveType);
 
 		CD3DX12_GPU_DESCRIPTOR_HANDLE tex(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 		tex.Offset(ri->Mat->DiffuseSrvHeapIndex, mCbvSrvDescriptorSize);
 
-        D3D12_GPU_VIRTUAL_ADDRESS objCBAddress = objectCB->GetGPUVirtualAddress() + ri->ObjCBIndex*objCBByteSize;
-		D3D12_GPU_VIRTUAL_ADDRESS matCBAddress = matCB->GetGPUVirtualAddress() + ri->Mat->MatCBIndex*matCBByteSize;
+		D3D12_GPU_VIRTUAL_ADDRESS objCBAddress = objectCB->GetGPUVirtualAddress() + ri->ObjCBIndex * objCBByteSize;
+		D3D12_GPU_VIRTUAL_ADDRESS matCBAddress = matCB->GetGPUVirtualAddress() + ri->Mat->MatCBIndex * matCBByteSize;
 
 		cmdList->SetGraphicsRootDescriptorTable(0, tex);
-        cmdList->SetGraphicsRootConstantBufferView(1, objCBAddress);
-        cmdList->SetGraphicsRootConstantBufferView(3, matCBAddress);
+		cmdList->SetGraphicsRootConstantBufferView(1, objCBAddress);
+		cmdList->SetGraphicsRootConstantBufferView(3, matCBAddress);
 
-        cmdList->DrawIndexedInstanced(ri->IndexCount, 1, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
-    }
+		cmdList->DrawIndexedInstanced(ri->IndexCount, 1, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
+	}
 }
 
 std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> TexWavesApp::GetStaticSamplers()
 {
-	// Applications usually only need a handful of samplers.  So just define them all up front
-	// and keep them available as part of the root signature.  
-
 	const CD3DX12_STATIC_SAMPLER_DESC pointWrap(
 		0, // shaderRegister
 		D3D12_FILTER_MIN_MAG_MIP_POINT, // filter
@@ -1613,29 +1657,29 @@ std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> TexWavesApp::GetStaticSamplers(
 		0.0f,                              // mipLODBias
 		8);                                // maxAnisotropy
 
-	return { 
+	return {
 		pointWrap, pointClamp,
-		linearWrap, linearClamp, 
+		linearWrap, linearClamp,
 		anisotropicWrap, anisotropicClamp };
 }
 
 float TexWavesApp::GetHillsHeight(float x, float z)const
 {
-    return 0.3f*(z*sinf(0.1f*x) + x*cosf(0.1f*z));
+	return 0.3f * (z * sinf(0.1f * x) + x * cosf(0.1f * z));
 }
 
 XMFLOAT3 TexWavesApp::GetHillsNormal(float x, float z)const
 {
-    // n = (-df/dx, 1, -df/dz)
-    XMFLOAT3 n(
-        -0.03f*z*cosf(0.1f*x) - 0.3f*cosf(0.1f*z),
-        1.0f,
-        -0.3f*sinf(0.1f*x) + 0.03f*x*sinf(0.1f*z));
+	// n = (-df/dx, 1, -df/dz)
+	XMFLOAT3 n(
+		-0.03f * z * cosf(0.1f * x) - 0.3f * cosf(0.1f * z),
+		1.0f,
+		-0.3f * sinf(0.1f * x) + 0.03f * x * sinf(0.1f * z));
 
-    XMVECTOR unitNormal = XMVector3Normalize(XMLoadFloat3(&n));
-    XMStoreFloat3(&n, unitNormal);
+	XMVECTOR unitNormal = XMVector3Normalize(XMLoadFloat3(&n));
+	XMStoreFloat3(&n, unitNormal);
 
-    return n;
+	return n;
 }
 
 void TexWavesApp::BuildLightingRootSignature()

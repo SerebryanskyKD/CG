@@ -1,14 +1,9 @@
-//***************************************************************************************
-// DeferredLighting.hlsl
-// Fullscreen deferred lighting pass (ambient + directional only).
-//***************************************************************************************
-
 #ifndef NUM_DIR_LIGHTS
     #define NUM_DIR_LIGHTS 3
 #endif
 
 #ifndef NUM_POINT_LIGHTS
-    #define NUM_POINT_LIGHTS 550
+    #define NUM_POINT_LIGHTS 32
 #endif
 
 #ifndef NUM_SPOT_LIGHTS
@@ -17,9 +12,9 @@
 
 #include "LightingUtil.hlsl"
 
-Texture2D gGBuffer0 : register(t0); // albedo.rgb + roughness
-Texture2D gGBuffer1 : register(t1); // encoded normal.xyz
-Texture2D gDepthMap : register(t2); // depth buffer as SRV
+Texture2D gGBuffer0 : register(t0);
+Texture2D gGBuffer1 : register(t1);
+Texture2D gDepthMap : register(t2);
 
 SamplerState gsamPointWrap : register(s0);
 SamplerState gsamPointClamp : register(s1);
