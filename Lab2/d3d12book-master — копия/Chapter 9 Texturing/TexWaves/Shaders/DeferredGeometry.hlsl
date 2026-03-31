@@ -19,6 +19,7 @@
 #include "LightingUtil.hlsl"
 
 Texture2D gDiffuseMap : register(t0);
+Texture2D gNormalMap : register(t1);
 
 SamplerState gsamPointWrap : register(s0);
 SamplerState gsamPointClamp : register(s1);
@@ -62,6 +63,8 @@ cbuffer cbMaterial : register(b2)
     float3 gFresnelR0;
     float gRoughness;
     float4x4 gMatTransform;
+    float gDisplacementScale;
+    float3 gMaterialPad;
 };
 
 struct VertexIn
@@ -110,8 +113,10 @@ GBufferOut PS(VertexOut pin)
     float4 diffuseAlbedo = gDiffuseMap.Sample(gsamAnisotropicWrap, pin.TexC) * gDiffuseAlbedo;
 
     pin.NormalW = normalize(pin.NormalW);
+    float3 normalSample = gNormalMap.Sample(gsamAnisotropicWrap, pin.TexC).xyz;
+    float3 shadedNormalW = NormalSampleToWorldSpace(normalSample, pin.NormalW, pin.PosW, pin.TexC);
 
-    float3 encodedNormal = pin.NormalW * 0.5f + 0.5f;
+    float3 encodedNormal = shadedNormalW * 0.5f + 0.5f;
 
     gout.Target0 = float4(diffuseAlbedo.rgb, gRoughness);
     gout.Target1 = float4(encodedNormal, 1.0f);

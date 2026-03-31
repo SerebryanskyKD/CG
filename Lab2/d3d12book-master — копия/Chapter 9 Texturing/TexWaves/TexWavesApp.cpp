@@ -1,4 +1,4 @@
-//***************************************************************************************
+Ôªø//***************************************************************************************
 // TexWavesApp.cpp by Frank Luna (C) 2015 All Rights Reserved.
 //***************************************************************************************
 
@@ -11,6 +11,9 @@
 #include "RenderingSystem.h"
 #include "ObjModelLoader.h"
 #include "TgaTextureLoader.h"
+#include <cfloat>
+#include <cmath>
+#include <unordered_set>
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -49,6 +52,7 @@ struct RenderItem
 enum class RenderLayer : int
 {
 	Opaque = 0,
+	Tessellated,
 	Count
 };
 
@@ -89,9 +93,12 @@ private:
 	void BuildWavesGeometry();
 	void BuildBoxGeometry();
 	void BuildSponzaGeometry();
+	void BuildStonePathwayGeometry();
 	void BuildLightSphereGeometry();
 	void BuildSponzaMaterials();
+	void BuildStonePathwayMaterial();
 	void BuildSponzaRenderItems();
+	void BuildStonePathwayRenderItem();
 	void BuildPSOs();
 	void BuildFrameResources();
 	void BuildMaterials();
@@ -99,6 +106,9 @@ private:
 	void DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems);
 	void BuildLightingRootSignature();
 	void LoadSponzaTextures();
+	void LoadStonePathwayTextures();
+	bool ShouldTessellateMaterial(const std::string& materialName) const;
+	std::filesystem::path BuildSiblingTexturePath(const std::filesystem::path& diffusePath, const std::string& suffix) const;
 
 	std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> GetStaticSamplers();
 
@@ -162,9 +172,13 @@ private:
 	POINT mLastMousePos;
 
 	ObjModelLoader::ModelData mSponzaModel;
+	ObjModelLoader::ModelData mStonePathwayModel;
 
 	std::filesystem::path mSponzaDirectory;
+	std::filesystem::path mStonePathwayDirectory;
 	std::unordered_map<std::string, std::string> mSponzaMaterialToTextureName;
+	std::unordered_map<std::string, std::string> mSponzaMaterialToNormalTextureName;
+	std::unordered_map<std::string, std::string> mSponzaMaterialToDisplacementTextureName;
 	std::unordered_map<std::string, UINT> mTextureSrvHeapIndices;
 	std::vector<std::string> mOrderedTextureNames;
 	UINT mGBufferSrvHeapOffset = 0;
@@ -238,6 +252,8 @@ bool TexWavesApp::Initialize()
 	LoadTextures();
 	BuildSponzaGeometry();
 	LoadSponzaTextures();
+	BuildStonePathwayGeometry();
+	LoadStonePathwayTextures();
 
 	BuildRootSignature();
 	BuildDebugRootSignature();
@@ -254,9 +270,11 @@ bool TexWavesApp::Initialize()
 
 	BuildMaterials();
 	BuildSponzaMaterials();
+	BuildStonePathwayMaterial();
 
 	BuildRenderItems();
 	BuildSponzaRenderItems();
+	BuildStonePathwayRenderItem();
 
 	BuildFrameResources();
 	BuildPSOs();
@@ -337,9 +355,12 @@ void TexWavesApp::Draw(const GameTimer& gt)
 	mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
 
 	auto passCB = mCurrFrameResource->PassCB->Resource();
-	mCommandList->SetGraphicsRootConstantBufferView(2, passCB->GetGPUVirtualAddress());
+	mCommandList->SetGraphicsRootConstantBufferView(4, passCB->GetGPUVirtualAddress());
 
 	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Opaque]);
+
+	mCommandList->SetPipelineState(mPSOs["gbufferTess"].Get());
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Tessellated]);
 
 	gbuffer.TransitionToRead(mCommandList.Get());
 
@@ -548,6 +569,7 @@ void TexWavesApp::UpdateMaterialCBs(const GameTimer& gt)
 			matConstants.FresnelR0 = mat->FresnelR0;
 			matConstants.Roughness = mat->Roughness;
 			XMStoreFloat4x4(&matConstants.MatTransform, XMMatrixTranspose(matTransform));
+			matConstants.DisplacementScale = mat->DisplacementScale;
 
 			currMaterialCB->CopyData(mat->MatCBIndex, matConstants);
 
@@ -630,7 +652,7 @@ void TexWavesApp::UpdateMainPassCB(const GameTimer& gt)
 
 	assert(kFirstSpotLight + 3 < MaxLights);
 
-	// ›ÚË ÍÓÓ‰ËÌ‡Ú˚ ÔÓÚÓÏ ÔÓ‰„ÓÌË¯¸ ÔÓ‰ Ò‚ÓË ÍÓÎÓÌÌ˚
+	// –≠—Ç–∏ –∫–æ–æ—Ä–¥–∏–Ω–∞—Ç—ã –ø–æ—Ç–æ–º –ø–æ–¥–≥–æ–Ω–∏—à—å –ø–æ–¥ —Å–≤–æ–∏ –∫–æ–ª–æ–Ω–Ω—ã
 	const DirectX::XMFLOAT3 startP = { -6.5f, 8.8f, 1.0f };
 	const DirectX::XMFLOAT3 endP = { 6.5f, 8.8f, 1.0f };
 
@@ -766,26 +788,50 @@ void TexWavesApp::LoadTextures()
 		fenceTex->Filename.c_str(), fenceTex->Resource, fenceTex->UploadHeap));
 	mOrderedTextureNames.push_back(fenceTex->Name);
 	mTextures[fenceTex->Name] = std::move(fenceTex);
+
+	auto defaultNormalTex = std::make_unique<Texture>();
+	defaultNormalTex->Name = "defaultNormalTex";
+	defaultNormalTex->Filename = L"../../Textures/default_nmap.dds";
+	ThrowIfFailed(CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(),
+		defaultNormalTex->Filename.c_str(), defaultNormalTex->Resource, defaultNormalTex->UploadHeap));
+	mOrderedTextureNames.push_back(defaultNormalTex->Name);
+	mTextures[defaultNormalTex->Name] = std::move(defaultNormalTex);
+
+	auto defaultDisplacementTex = std::make_unique<Texture>();
+	defaultDisplacementTex->Name = "defaultDisplacementTex";
+	defaultDisplacementTex->Filename = L"../../Textures/white1x1.dds";
+	ThrowIfFailed(CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(),
+		defaultDisplacementTex->Filename.c_str(), defaultDisplacementTex->Resource, defaultDisplacementTex->UploadHeap));
+	mOrderedTextureNames.push_back(defaultDisplacementTex->Name);
+	mTextures[defaultDisplacementTex->Name] = std::move(defaultDisplacementTex);
 }
 
 void TexWavesApp::BuildRootSignature()
 {
-	CD3DX12_DESCRIPTOR_RANGE texTable;
-	texTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+	CD3DX12_DESCRIPTOR_RANGE diffuseTable;
+	diffuseTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+
+	CD3DX12_DESCRIPTOR_RANGE normalTable;
+	normalTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1);
+
+	CD3DX12_DESCRIPTOR_RANGE displacementTable;
+	displacementTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2);
 
 	// Root parameter can be a table, root descriptor or root constants.
-	CD3DX12_ROOT_PARAMETER slotRootParameter[4];
+	CD3DX12_ROOT_PARAMETER slotRootParameter[6];
 
 	// Perfomance TIP: Order from most frequent to least frequent.
-	slotRootParameter[0].InitAsDescriptorTable(1, &texTable, D3D12_SHADER_VISIBILITY_PIXEL);
-	slotRootParameter[1].InitAsConstantBufferView(0);
-	slotRootParameter[2].InitAsConstantBufferView(1);
-	slotRootParameter[3].InitAsConstantBufferView(2);
+	slotRootParameter[0].InitAsDescriptorTable(1, &diffuseTable);
+	slotRootParameter[1].InitAsDescriptorTable(1, &normalTable);
+	slotRootParameter[2].InitAsDescriptorTable(1, &displacementTable);
+	slotRootParameter[3].InitAsConstantBufferView(0);
+	slotRootParameter[4].InitAsConstantBufferView(1);
+	slotRootParameter[5].InitAsConstantBufferView(2);
 
 	auto staticSamplers = GetStaticSamplers();
 
 	// A root signature is an array of root parameters.
-	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(4, slotRootParameter,
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(6, slotRootParameter,
 		(UINT)staticSamplers.size(), staticSamplers.data(),
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
@@ -911,6 +957,10 @@ void TexWavesApp::BuildShadersAndInputLayout()
 
 	mShaders["gbufferVS"] = d3dUtil::CompileShader(L"Shaders\\DeferredGeometry.hlsl", nullptr, "VS", "vs_5_0");
 	mShaders["gbufferPS"] = d3dUtil::CompileShader(L"Shaders\\DeferredGeometry.hlsl", nullptr, "PS", "ps_5_0");
+	mShaders["tessVS"] = d3dUtil::CompileShader(L"Shaders\\TessellationGBuffer.hlsl", nullptr, "VS", "vs_5_0");
+	mShaders["tessHS"] = d3dUtil::CompileShader(L"Shaders\\TessellationGBuffer.hlsl", nullptr, "HS", "hs_5_0");
+	mShaders["tessDS"] = d3dUtil::CompileShader(L"Shaders\\TessellationGBuffer.hlsl", nullptr, "DS", "ds_5_0");
+	mShaders["tessPS"] = d3dUtil::CompileShader(L"Shaders\\TessellationGBuffer.hlsl", nullptr, "PS", "ps_5_0");
 
 	mShaders["debugVS"] = d3dUtil::CompileShader(L"Shaders\\DebugGBuffer.hlsl", nullptr, "VS", "vs_5_0");
 	mShaders["debugPS"] = d3dUtil::CompileShader(L"Shaders\\DebugGBuffer.hlsl", nullptr, "PS", "ps_5_0");
@@ -1085,7 +1135,7 @@ void TexWavesApp::BuildLightSphereGeometry()
 {
 	GeometryGenerator geoGen;
 	GeometryGenerator::MeshData sphere = geoGen.CreateSphere(0.18f, 12, 12);
-	// 0.18f ~= ‡ÁÏÂ "Ò ÍÛÎ‡Í" ÔÓÒÎÂ Ú‚ÓÂ„Ó Ï‡Ò¯Ú‡·‡ ÒˆÂÌ˚
+	// 0.18f ~= —Ä–∞–∑–º–µ—Ä "—Å –∫—É–ª–∞–∫" –ø–æ—Å–ª–µ —Ç–≤–æ–µ–≥–æ –º–∞—Å—à—Ç–∞–±–∞ —Å—Ü–µ–Ω—ã
 
 	std::vector<Vertex> vertices(sphere.Vertices.size());
 	for (size_t i = 0; i < sphere.Vertices.size(); ++i)
@@ -1140,7 +1190,7 @@ void TexWavesApp::BuildLightSphereGeometry()
 
 void TexWavesApp::BuildSponzaGeometry()
 {
-	std::filesystem::path objPath = L"C:/Users/theof/source/repos/CG/Lab2/d3d12book-master ó ÍÓÔËˇ/Chapter 9 Texturing/TexWaves/x64/Debug/sponza.obj";
+	std::filesystem::path objPath = L"C:/Users/theof/source/repos/CG/Lab2/d3d12book-master ‚Äî –∫–æ–ø–∏—è/Chapter 9 Texturing/TexWaves/x64/Debug/sponza.obj";
 
 	if (!std::filesystem::exists(objPath))
 	{
@@ -1216,9 +1266,103 @@ void TexWavesApp::BuildSponzaGeometry()
 	mGeometries[geo->Name] = std::move(geo);
 }
 
+void TexWavesApp::BuildStonePathwayGeometry()
+{
+	std::filesystem::path objPath = L"Assets/StonePathway/StonePathway.obj";
+	objPath = std::filesystem::absolute(objPath);
+
+	if (!std::filesystem::exists(objPath))
+		throw std::runtime_error("Stone Pathway OBJ file not found: " + objPath.string());
+
+	mStonePathwayDirectory = objPath.parent_path();
+	mStonePathwayModel = ObjModelLoader::LoadFromFile(objPath);
+
+	if (mStonePathwayModel.Vertices.empty() || mStonePathwayModel.Indices32.empty())
+		throw std::runtime_error("Stone Pathway load failed: geometry is empty.");
+
+	const bool hasTexcoords = std::any_of(
+		mStonePathwayModel.Vertices.begin(),
+		mStonePathwayModel.Vertices.end(),
+		[](const ObjModelLoader::Vertex& v)
+		{
+			return std::fabs(v.TexC.x) > 1e-6f || std::fabs(v.TexC.y) > 1e-6f;
+		});
+
+	if (!hasTexcoords)
+	{
+		float minY = FLT_MAX;
+		float maxY = -FLT_MAX;
+
+		for (const auto& v : mStonePathwayModel.Vertices)
+		{
+			minY = (std::min)(minY, v.Pos.y);
+			maxY = (std::max)(maxY, v.Pos.y);
+		}
+
+		const float sizeY = (std::max)(maxY - minY, 1e-3f);
+		const float tileU = 4.0f;
+		const float tileV = 2.0f;
+		const float seamShift = 0.25f;
+
+		for (auto& v : mStonePathwayModel.Vertices)
+		{
+			float u = (std::atan2(v.Pos.z, v.Pos.x) + XM_PI) / XM_2PI;
+			u = std::fmod(u + seamShift, 1.0f);
+			if (u < 0.0f)
+				u += 1.0f;
+
+			const float vCoord = (v.Pos.y - minY) / sizeY;
+
+			v.TexC.x = u * tileU;
+			v.TexC.y = 1.0f - vCoord * tileV;
+		}
+	}
+
+	const UINT vbByteSize = (UINT)mStonePathwayModel.Vertices.size() * sizeof(ObjModelLoader::Vertex);
+	const UINT ibByteSize = (UINT)mStonePathwayModel.Indices32.size() * sizeof(uint32_t);
+
+	auto geo = std::make_unique<MeshGeometry>();
+	geo->Name = "stonePathwayGeo";
+
+	ThrowIfFailed(D3DCreateBlob(vbByteSize, &geo->VertexBufferCPU));
+	CopyMemory(geo->VertexBufferCPU->GetBufferPointer(), mStonePathwayModel.Vertices.data(), vbByteSize);
+
+	ThrowIfFailed(D3DCreateBlob(ibByteSize, &geo->IndexBufferCPU));
+	CopyMemory(geo->IndexBufferCPU->GetBufferPointer(), mStonePathwayModel.Indices32.data(), ibByteSize);
+
+	geo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(
+		md3dDevice.Get(),
+		mCommandList.Get(),
+		mStonePathwayModel.Vertices.data(),
+		vbByteSize,
+		geo->VertexBufferUploader);
+
+	geo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(
+		md3dDevice.Get(),
+		mCommandList.Get(),
+		mStonePathwayModel.Indices32.data(),
+		ibByteSize,
+		geo->IndexBufferUploader);
+
+	geo->VertexByteStride = sizeof(ObjModelLoader::Vertex);
+	geo->VertexBufferByteSize = vbByteSize;
+	geo->IndexFormat = DXGI_FORMAT_R32_UINT;
+	geo->IndexBufferByteSize = ibByteSize;
+
+	SubmeshGeometry submesh;
+	submesh.IndexCount = (UINT)mStonePathwayModel.Indices32.size();
+	submesh.StartIndexLocation = 0;
+	submesh.BaseVertexLocation = 0;
+
+	geo->DrawArgs["stonePathway"] = submesh;
+	mGeometries[geo->Name] = std::move(geo);
+}
+
 void TexWavesApp::BuildSponzaMaterials()
 {
 	int nextMatCBIndex = (int)mMaterials.size();
+	const int defaultNormalSrv = (int)mTextureSrvHeapIndices["defaultNormalTex"];
+	const int defaultDisplacementSrv = (int)mTextureSrvHeapIndices["defaultDisplacementTex"];
 
 	for (const auto& kv : mSponzaModel.Materials)
 	{
@@ -1243,9 +1387,32 @@ void TexWavesApp::BuildSponzaMaterials()
 			mat->DiffuseSrvHeapIndex = 0;
 		}
 
+		auto normalNameIt = mSponzaMaterialToNormalTextureName.find(srcMat.Name);
+		if (normalNameIt != mSponzaMaterialToNormalTextureName.end())
+		{
+			auto srvIt = mTextureSrvHeapIndices.find(normalNameIt->second);
+			mat->NormalSrvHeapIndex = (srvIt != mTextureSrvHeapIndices.end()) ? srvIt->second : defaultNormalSrv;
+		}
+		else
+		{
+			mat->NormalSrvHeapIndex = defaultNormalSrv;
+		}
+
+		auto displacementNameIt = mSponzaMaterialToDisplacementTextureName.find(srcMat.Name);
+		if (displacementNameIt != mSponzaMaterialToDisplacementTextureName.end())
+		{
+			auto srvIt = mTextureSrvHeapIndices.find(displacementNameIt->second);
+			mat->DisplacementSrvHeapIndex = (srvIt != mTextureSrvHeapIndices.end()) ? srvIt->second : defaultDisplacementSrv;
+		}
+		else
+		{
+			mat->DisplacementSrvHeapIndex = defaultDisplacementSrv;
+		}
+
 		mat->DiffuseAlbedo = XMFLOAT4(srcMat.Kd.x, srcMat.Kd.y, srcMat.Kd.z, 1.0f);
 		mat->FresnelR0 = XMFLOAT3(0.04f, 0.04f, 0.04f);
 		mat->Roughness = 0.35f;
+		mat->DisplacementScale = ShouldTessellateMaterial(srcMat.Name) ? 0.45f : 0.0f;
 
 		XMStoreFloat4x4(&mat->MatTransform, XMMatrixIdentity());
 
@@ -1258,6 +1425,8 @@ void TexWavesApp::BuildSponzaMaterials()
 		mat->Name = "default";
 		mat->MatCBIndex = nextMatCBIndex++;
 		mat->DiffuseSrvHeapIndex = 0;
+		mat->NormalSrvHeapIndex = defaultNormalSrv;
+		mat->DisplacementSrvHeapIndex = defaultDisplacementSrv;
 		mat->DiffuseAlbedo = XMFLOAT4(0.85f, 0.85f, 0.85f, 1.0f);
 		mat->FresnelR0 = XMFLOAT3(0.04f, 0.04f, 0.04f);
 		mat->Roughness = 0.5f;
@@ -1265,6 +1434,26 @@ void TexWavesApp::BuildSponzaMaterials()
 
 		mMaterials[mat->Name] = std::move(mat);
 	}
+}
+
+void TexWavesApp::BuildStonePathwayMaterial()
+{
+	if (mMaterials.find("stonePathway") != mMaterials.end())
+		return;
+
+	auto mat = std::make_unique<Material>();
+	mat->Name = "stonePathway";
+	mat->MatCBIndex = (int)mMaterials.size();
+	mat->DiffuseSrvHeapIndex = (int)mTextureSrvHeapIndices["stonePathwayBaseTex"];
+	mat->NormalSrvHeapIndex = (int)mTextureSrvHeapIndices["stonePathwayNormalTex"];
+	mat->DisplacementSrvHeapIndex = (int)mTextureSrvHeapIndices["stonePathwayHeightTex"];
+	mat->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+	mat->FresnelR0 = XMFLOAT3(0.04f, 0.04f, 0.04f);
+	mat->Roughness = 0.55f;
+	mat->DisplacementScale = 0.045f;
+	XMStoreFloat4x4(&mat->MatTransform, XMMatrixIdentity());
+
+	mMaterials[mat->Name] = std::move(mat);
 }
 
 void TexWavesApp::BuildSponzaRenderItems()
@@ -1294,12 +1483,15 @@ void TexWavesApp::BuildSponzaRenderItems()
 			ri->Mat = mMaterials["default"].get();
 
 		ri->Geo = geo;
-		ri->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+		const bool tessellated = (ri->Mat->DisplacementScale > 0.0f);
+		ri->PrimitiveType = tessellated
+			? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST
+			: D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 		ri->IndexCount = sm.IndexCount;
 		ri->StartIndexLocation = sm.StartIndexLocation;
 		ri->BaseVertexLocation = sm.BaseVertexLocation;
 
-		mRitemLayer[(int)RenderLayer::Opaque].push_back(ri.get());
+		mRitemLayer[(int)(tessellated ? RenderLayer::Tessellated : RenderLayer::Opaque)].push_back(ri.get());
 		mAllRitems.push_back(std::move(ri));
 	}
 
@@ -1308,6 +1500,8 @@ void TexWavesApp::BuildSponzaRenderItems()
 	// ------------------------------------------------------------
 	auto bulbGeo = mGeometries["lightSphereGeo"].get();
 	auto bulbMat = mMaterials["lightBulb"].get();
+	const int defaultNormalSrv = (int)mTextureSrvHeapIndices["defaultNormalTex"];
+	const int defaultDisplacementSrv = (int)mTextureSrvHeapIndices["defaultDisplacementTex"];
 
 	const int bulbCount = 500;
 
@@ -1329,12 +1523,12 @@ void TexWavesApp::BuildSponzaRenderItems()
 
 		float hue = (float)i / bulbCount;
 
-		// ÔÓÒÚ‡ˇ HSV ? RGB (ÔÒÂ‚‰Ó)
+		// –ø—Ä–æ—Å—Ç–∞—è HSV ? RGB (–ø—Å–µ–≤–¥–æ)
 		float r = fabsf(sinf(hue * XM_2PI));
 		float g = fabsf(sinf(hue * XM_2PI + 2.0f));
 		float b = fabsf(sinf(hue * XM_2PI + 4.0f));
 
-		// ÌÂÏÌÓ„Ó ÛÒËÎËÏ Ì‡Ò˚˘ÂÌÌÓÒÚ¸
+		// –Ω–µ–º–Ω–æ–≥–æ —É—Å–∏–ª–∏–º –Ω–∞—Å—ã—â–µ–Ω–Ω–æ—Å—Ç—å
 		r = powf(r, 0.5f);
 		g = powf(g, 0.5f);
 		b = powf(b, 0.5f);
@@ -1353,6 +1547,8 @@ void TexWavesApp::BuildSponzaRenderItems()
 		mat->Name = "lightBulb_" + std::to_string(i);
 		mat->MatCBIndex = (UINT)mMaterials.size();
 		mat->DiffuseSrvHeapIndex = 0;
+		mat->NormalSrvHeapIndex = defaultNormalSrv;
+		mat->DisplacementSrvHeapIndex = defaultDisplacementSrv;
 		mat->DiffuseAlbedo = XMFLOAT4(r * 6.0f, g * 6.0f, b * 6.0f, 1.0f);
 		mat->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
 		mat->Roughness = 0.01f;
@@ -1419,12 +1615,40 @@ void TexWavesApp::BuildPSOs()
 	gbufferPsoDesc.RTVFormats[2] = DXGI_FORMAT_R16G16_FLOAT;
 	gbufferPsoDesc.DSVFormat = mDepthStencilFormat;
 
-	// ¬¿∆ÕŒ:
+	// –í–ê–ñ–ù–û:
 	gbufferPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
 		&gbufferPsoDesc,
 		IID_PPV_ARGS(&mPSOs["gbuffer"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC tessPsoDesc = gbufferPsoDesc;
+	tessPsoDesc.VS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["tessVS"]->GetBufferPointer()),
+		mShaders["tessVS"]->GetBufferSize()
+	};
+	tessPsoDesc.HS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["tessHS"]->GetBufferPointer()),
+		mShaders["tessHS"]->GetBufferSize()
+	};
+	tessPsoDesc.DS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["tessDS"]->GetBufferPointer()),
+		mShaders["tessDS"]->GetBufferSize()
+	};
+	tessPsoDesc.PS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["tessPS"]->GetBufferPointer()),
+		mShaders["tessPS"]->GetBufferSize()
+	};
+	tessPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
+	tessPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+		&tessPsoDesc,
+		IID_PPV_ARGS(&mPSOs["gbufferTess"])));
 
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC debugPsoDesc = {};
 	ZeroMemory(&debugPsoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
@@ -1500,10 +1724,15 @@ void TexWavesApp::BuildFrameResources()
 
 void TexWavesApp::BuildMaterials()
 {
+	const int defaultNormalSrv = (int)mTextureSrvHeapIndices["defaultNormalTex"];
+	const int defaultDisplacementSrv = (int)mTextureSrvHeapIndices["defaultDisplacementTex"];
+
 	auto grass = std::make_unique<Material>();
 	grass->Name = "grass";
 	grass->MatCBIndex = 0;
 	grass->DiffuseSrvHeapIndex = 0;
+	grass->NormalSrvHeapIndex = defaultNormalSrv;
+	grass->DisplacementSrvHeapIndex = defaultDisplacementSrv;
 	grass->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
 	grass->FresnelR0 = XMFLOAT3(0.01f, 0.01f, 0.01f);
 	grass->Roughness = 0.125f;
@@ -1512,6 +1741,8 @@ void TexWavesApp::BuildMaterials()
 	water->Name = "water";
 	water->MatCBIndex = 1;
 	water->DiffuseSrvHeapIndex = 1;
+	water->NormalSrvHeapIndex = defaultNormalSrv;
+	water->DisplacementSrvHeapIndex = defaultDisplacementSrv;
 	water->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
 	water->FresnelR0 = XMFLOAT3(0.2f, 0.2f, 0.2f);
 	water->Roughness = 0.0f;
@@ -1520,6 +1751,8 @@ void TexWavesApp::BuildMaterials()
 	wirefence->Name = "wirefence";
 	wirefence->MatCBIndex = 2;
 	wirefence->DiffuseSrvHeapIndex = 2;
+	wirefence->NormalSrvHeapIndex = defaultNormalSrv;
+	wirefence->DisplacementSrvHeapIndex = defaultDisplacementSrv;
 	wirefence->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
 	wirefence->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
 	wirefence->Roughness = 0.25f;
@@ -1527,8 +1760,10 @@ void TexWavesApp::BuildMaterials()
 	auto lightBulb = std::make_unique<Material>();
 	lightBulb->Name = "lightBulb";
 	lightBulb->MatCBIndex = 3;
-	lightBulb->DiffuseSrvHeapIndex = 0; // ÏÓÊÌÓ ËÒÔÓÎ¸ÁÓ‚‡Ú¸ Î˛·Û˛ ÒÛ˘ÂÒÚ‚Û˛˘Û˛ ÚÂÍÒÚÛÛ, Ì‡Ï ‚‡ÊÂÌ ˆ‚ÂÚ
-	lightBulb->DiffuseAlbedo = XMFLOAT4(8.0f, 7.2f, 5.5f, 1.0f); // ˇÍËÈ Ú∏ÔÎ˚È
+	lightBulb->DiffuseSrvHeapIndex = 0; // –º–æ–∂–Ω–æ –∏—Å–ø–æ–ª—å–∑–æ–≤–∞—Ç—å –ª—é–±—É—é —Å—É—â–µ—Å—Ç–≤—É—é—â—É—é —Ç–µ–∫—Å—Ç—É—Ä—É, –Ω–∞–º –≤–∞–∂–µ–Ω —Ü–≤–µ—Ç
+	lightBulb->NormalSrvHeapIndex = defaultNormalSrv;
+	lightBulb->DisplacementSrvHeapIndex = defaultDisplacementSrv;
+	lightBulb->DiffuseAlbedo = XMFLOAT4(8.0f, 7.2f, 5.5f, 1.0f); // —è—Ä–∫–∏–π —Ç—ë–ø–ª—ã–π
 	lightBulb->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
 	lightBulb->Roughness = 0.02f;
 
@@ -1595,15 +1830,23 @@ void TexWavesApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std:
 		cmdList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
 		cmdList->IASetPrimitiveTopology(ri->PrimitiveType);
 
-		CD3DX12_GPU_DESCRIPTOR_HANDLE tex(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
-		tex.Offset(ri->Mat->DiffuseSrvHeapIndex, mCbvSrvDescriptorSize);
+		CD3DX12_GPU_DESCRIPTOR_HANDLE diffuseTex(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+		diffuseTex.Offset(ri->Mat->DiffuseSrvHeapIndex, mCbvSrvDescriptorSize);
+
+		CD3DX12_GPU_DESCRIPTOR_HANDLE normalTex(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+		normalTex.Offset(ri->Mat->NormalSrvHeapIndex, mCbvSrvDescriptorSize);
+
+		CD3DX12_GPU_DESCRIPTOR_HANDLE displacementTex(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+		displacementTex.Offset(ri->Mat->DisplacementSrvHeapIndex, mCbvSrvDescriptorSize);
 
 		D3D12_GPU_VIRTUAL_ADDRESS objCBAddress = objectCB->GetGPUVirtualAddress() + ri->ObjCBIndex * objCBByteSize;
 		D3D12_GPU_VIRTUAL_ADDRESS matCBAddress = matCB->GetGPUVirtualAddress() + ri->Mat->MatCBIndex * matCBByteSize;
 
-		cmdList->SetGraphicsRootDescriptorTable(0, tex);
-		cmdList->SetGraphicsRootConstantBufferView(1, objCBAddress);
-		cmdList->SetGraphicsRootConstantBufferView(3, matCBAddress);
+		cmdList->SetGraphicsRootDescriptorTable(0, diffuseTex);
+		cmdList->SetGraphicsRootDescriptorTable(1, normalTex);
+		cmdList->SetGraphicsRootDescriptorTable(2, displacementTex);
+		cmdList->SetGraphicsRootConstantBufferView(3, objCBAddress);
+		cmdList->SetGraphicsRootConstantBufferView(5, matCBAddress);
 
 		cmdList->DrawIndexedInstanced(ri->IndexCount, 1, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
 	}
@@ -1723,6 +1966,8 @@ void TexWavesApp::BuildLightingRootSignature()
 void TexWavesApp::LoadSponzaTextures()
 {
 	mSponzaMaterialToTextureName.clear();
+	mSponzaMaterialToNormalTextureName.clear();
+	mSponzaMaterialToDisplacementTextureName.clear();
 
 	for (const auto& kv : mSponzaModel.Materials)
 	{
@@ -1754,5 +1999,139 @@ void TexWavesApp::LoadSponzaTextures()
 
 		mOrderedTextureNames.push_back(tex->Name);
 		mTextures[tex->Name] = std::move(tex);
+
+		std::filesystem::path normalPath = BuildSiblingTexturePath(texPath, "_ddn");
+		if (std::filesystem::exists(normalPath))
+		{
+			std::string normalTextureName = "sponzaNormal_" + matInfo.Name;
+			mSponzaMaterialToNormalTextureName[matInfo.Name] = normalTextureName;
+
+			if (mTextures.find(normalTextureName) == mTextures.end())
+			{
+				auto normalTex = std::make_unique<Texture>();
+				normalTex->Name = normalTextureName;
+				normalTex->Filename = normalPath.wstring();
+
+				ThrowIfFailed(CreateTGATextureFromFile12(
+					md3dDevice.Get(),
+					mCommandList.Get(),
+					normalTex->Filename,
+					normalTex->Resource,
+					normalTex->UploadHeap));
+
+				mOrderedTextureNames.push_back(normalTex->Name);
+				mTextures[normalTex->Name] = std::move(normalTex);
+			}
+		}
+
+		if (ShouldTessellateMaterial(matInfo.Name))
+		{
+			std::string displacementTextureName = "sponzaDisp_" + matInfo.Name;
+			mSponzaMaterialToDisplacementTextureName[matInfo.Name] = displacementTextureName;
+
+			if (mTextures.find(displacementTextureName) == mTextures.end())
+			{
+				auto displacementTex = std::make_unique<Texture>();
+				displacementTex->Name = displacementTextureName;
+				displacementTex->Filename = texPath.wstring();
+
+				ThrowIfFailed(CreateTGAHeightTextureFromFile12(
+					md3dDevice.Get(),
+					mCommandList.Get(),
+					displacementTex->Filename,
+					displacementTex->Resource,
+					displacementTex->UploadHeap));
+
+				mOrderedTextureNames.push_back(displacementTex->Name);
+				mTextures[displacementTex->Name] = std::move(displacementTex);
+			}
+		}
 	}
+}
+
+void TexWavesApp::BuildStonePathwayRenderItem()
+{
+	auto geo = mGeometries["stonePathwayGeo"].get();
+	auto mat = mMaterials["stonePathway"].get();
+
+	auto ri = std::make_unique<RenderItem>();
+	XMMATRIX world =
+		XMMatrixScaling(2.2f, 2.2f, 2.2f) *
+		XMMatrixRotationY(0.35f * XM_PI) *
+		XMMatrixTranslation(0.0f, 3.3f, 8.0f);
+
+	XMStoreFloat4x4(&ri->World, world);
+	XMStoreFloat4x4(&ri->TexTransform, XMMatrixIdentity());
+
+	ri->ObjCBIndex = (UINT)mAllRitems.size();
+	ri->Mat = mat;
+	ri->Geo = geo;
+	ri->PrimitiveType = D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
+	ri->IndexCount = geo->DrawArgs["stonePathway"].IndexCount;
+	ri->StartIndexLocation = geo->DrawArgs["stonePathway"].StartIndexLocation;
+	ri->BaseVertexLocation = geo->DrawArgs["stonePathway"].BaseVertexLocation;
+
+	mRitemLayer[(int)RenderLayer::Tessellated].push_back(ri.get());
+	mAllRitems.push_back(std::move(ri));
+}
+
+void TexWavesApp::LoadStonePathwayTextures()
+{
+	const std::array<std::pair<std::string, std::wstring>, 3> textures =
+	{ {
+		{ "stonePathwayBaseTex", L"Assets/StonePathway/Stone_Pathway_Base_Color.tga" },
+		{ "stonePathwayNormalTex", L"Assets/StonePathway/Stone_Pathway_Normal.tga" },
+		{ "stonePathwayHeightTex", L"Assets/StonePathway/Stone_Pathway_Height.tga" },
+	} };
+
+	for (const auto& [name, pathStr] : textures)
+	{
+		if (mTextures.find(name) != mTextures.end())
+			continue;
+
+		auto tex = std::make_unique<Texture>();
+		tex->Name = name;
+		tex->Filename = std::filesystem::absolute(pathStr).wstring();
+
+		ThrowIfFailed(CreateTGATextureFromFile12(
+			md3dDevice.Get(),
+			mCommandList.Get(),
+			tex->Filename,
+			tex->Resource,
+			tex->UploadHeap));
+
+		mOrderedTextureNames.push_back(tex->Name);
+		mTextures[tex->Name] = std::move(tex);
+	}
+}
+
+bool TexWavesApp::ShouldTessellateMaterial(const std::string& materialName) const
+{
+	static const std::unordered_set<std::string> kTessellatedMaterials =
+	{
+		"floor_a",
+		"bricks_a",
+		"column_a",
+		"column_b",
+		"column_c"
+	};
+
+	for (const std::string& token : kTessellatedMaterials)
+	{
+		if (materialName.find(token) != std::string::npos)
+			return true;
+	}
+
+	return false;
+}
+
+std::filesystem::path TexWavesApp::BuildSiblingTexturePath(const std::filesystem::path& diffusePath, const std::string& suffix) const
+{
+	const std::string stem = diffusePath.stem().string();
+	const std::string extension = diffusePath.extension().string();
+
+	if (stem.size() >= 5 && stem.substr(stem.size() - 5) == "_diff")
+		return diffusePath.parent_path() / (stem.substr(0, stem.size() - 5) + suffix + extension);
+
+	return diffusePath.parent_path() / (stem + suffix + extension);
 }

@@ -167,4 +167,24 @@ float4 ComputeLighting(Light gLights[MaxLights], Material mat,
     return float4(result, 0.0f);
 }
 
+float3 NormalSampleToWorldSpace(float3 normalMapSample, float3 unitNormalW, float3 posW, float2 texC)
+{
+    float3 normalT = 2.0f * normalMapSample - 1.0f;
+
+    float3 dp1 = ddx(posW);
+    float3 dp2 = ddy(posW);
+    float2 duv1 = ddx(texC);
+    float2 duv2 = ddy(texC);
+
+    float3 tangentW = dp1 * duv2.y - dp2 * duv1.y;
+    float3 bitangentW = dp2 * duv1.x - dp1 * duv2.x;
+
+    float3 N = normalize(unitNormalW);
+    float3 T = normalize(tangentW - dot(tangentW, N) * N);
+    float3 B = normalize(bitangentW - dot(bitangentW, N) * N);
+
+    float3x3 tbn = float3x3(T, B, N);
+    return normalize(mul(normalT, tbn));
+}
+
 

@@ -46,11 +46,14 @@ static void DecodeTGA(
     if (hdr.colorMapType != 0)
         throw std::runtime_error("Color mapped TGA is not supported.");
 
-    if (!(hdr.imageType == 2 || hdr.imageType == 10))
-        throw std::runtime_error("Only uncompressed/RLE true-color TGA is supported.");
+    const bool trueColor = (hdr.imageType == 2 || hdr.imageType == 10);
+    const bool grayscale = (hdr.imageType == 3);
 
-    if (!(hdr.pixelDepth == 24 || hdr.pixelDepth == 32))
-        throw std::runtime_error("Only 24-bit and 32-bit TGA is supported.");
+    if (!(trueColor || grayscale))
+        throw std::runtime_error("Only true-color and grayscale TGA is supported.");
+
+    if (!(hdr.pixelDepth == 8 || hdr.pixelDepth == 24 || hdr.pixelDepth == 32))
+        throw std::runtime_error("Only 8-bit, 24-bit and 32-bit TGA is supported.");
 
     if (hdr.idLength > 0)
         fin.seekg(hdr.idLength, std::ios::cur);
@@ -63,7 +66,7 @@ static void DecodeTGA(
 
     std::vector<uint8_t> raw(pixelCount * bytesPerPixel);
 
-    if (hdr.imageType == 2)
+    if (hdr.imageType == 2 || hdr.imageType == 3)
     {
         fin.read(reinterpret_cast<char*>(raw.data()), raw.size());
         if (!fin)
@@ -121,10 +124,24 @@ static void DecodeTGA(
             size_t srcIndex = (static_cast<size_t>(srcY) * outWidth + x) * bytesPerPixel;
             size_t dstIndex = (static_cast<size_t>(y) * outWidth + x) * 4;
 
-            uint8_t b = raw[srcIndex + 0];
-            uint8_t g = raw[srcIndex + 1];
-            uint8_t r = raw[srcIndex + 2];
-            uint8_t a = (bytesPerPixel == 4) ? raw[srcIndex + 3] : 255;
+            uint8_t r = 0;
+            uint8_t g = 0;
+            uint8_t b = 0;
+            uint8_t a = 255;
+
+            if (bytesPerPixel == 1)
+            {
+                r = raw[srcIndex + 0];
+                g = raw[srcIndex + 0];
+                b = raw[srcIndex + 0];
+            }
+            else
+            {
+                b = raw[srcIndex + 0];
+                g = raw[srcIndex + 1];
+                r = raw[srcIndex + 2];
+                a = (bytesPerPixel == 4) ? raw[srcIndex + 3] : 255;
+            }
 
             outRGBA[dstIndex + 0] = r;
             outRGBA[dstIndex + 1] = g;
@@ -132,6 +149,54 @@ static void DecodeTGA(
             outRGBA[dstIndex + 3] = a;
         }
     }
+}
+
+static HRESULT CreateTextureFromRGBAData12(
+    ID3D12Device* device,
+    ID3D12GraphicsCommandList* cmdList,
+    const std::vector<uint8_t>& rgbaData,
+    UINT width,
+    UINT height,
+    ComPtr<ID3D12Resource>& texture,
+    ComPtr<ID3D12Resource>& textureUploadHeap)
+{
+    auto texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        width,
+        height,
+        1, 1);
+
+    ThrowIfFailed(device->CreateCommittedResource(
+        &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+        D3D12_HEAP_FLAG_NONE,
+        &texDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(texture.GetAddressOf())));
+
+    UINT64 uploadBufferSize = GetRequiredIntermediateSize(texture.Get(), 0, 1);
+
+    ThrowIfFailed(device->CreateCommittedResource(
+        &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+        D3D12_HEAP_FLAG_NONE,
+        &CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize),
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(textureUploadHeap.GetAddressOf())));
+
+    D3D12_SUBRESOURCE_DATA subResourceData = {};
+    subResourceData.pData = rgbaData.data();
+    subResourceData.RowPitch = static_cast<LONG_PTR>(width * 4);
+    subResourceData.SlicePitch = subResourceData.RowPitch * height;
+
+    UpdateSubresources(cmdList, texture.Get(), textureUploadHeap.Get(), 0, 0, 1, &subResourceData);
+
+    cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+        texture.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_GENERIC_READ));
+
+    return S_OK;
 }
 
 HRESULT CreateTGATextureFromFile12(
@@ -148,44 +213,43 @@ HRESULT CreateTGATextureFromFile12(
         UINT height = 0;
 
         DecodeTGA(filename, rgbaData, width, height);
+        return CreateTextureFromRGBAData12(device, cmdList, rgbaData, width, height, texture, textureUploadHeap);
+    }
+    catch (...)
+    {
+        return E_FAIL;
+    }
+}
 
-        auto texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            DXGI_FORMAT_R8G8B8A8_UNORM,
-            width,
-            height,
-            1, 1);
+HRESULT CreateTGAHeightTextureFromFile12(
+    ID3D12Device* device,
+    ID3D12GraphicsCommandList* cmdList,
+    const std::wstring& filename,
+    ComPtr<ID3D12Resource>& texture,
+    ComPtr<ID3D12Resource>& textureUploadHeap)
+{
+    try
+    {
+        std::vector<uint8_t> rgbaData;
+        UINT width = 0;
+        UINT height = 0;
 
-        ThrowIfFailed(device->CreateCommittedResource(
-            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
-            D3D12_HEAP_FLAG_NONE,
-            &texDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            nullptr,
-            IID_PPV_ARGS(texture.GetAddressOf())));
+        DecodeTGA(filename, rgbaData, width, height);
 
-        UINT64 uploadBufferSize = GetRequiredIntermediateSize(texture.Get(), 0, 1);
+        for (size_t i = 0; i + 3 < rgbaData.size(); i += 4)
+        {
+            const uint8_t heightValue = static_cast<uint8_t>(
+                0.299f * rgbaData[i + 0] +
+                0.587f * rgbaData[i + 1] +
+                0.114f * rgbaData[i + 2]);
 
-        ThrowIfFailed(device->CreateCommittedResource(
-            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
-            D3D12_HEAP_FLAG_NONE,
-            &CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize),
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(textureUploadHeap.GetAddressOf())));
+            rgbaData[i + 0] = heightValue;
+            rgbaData[i + 1] = heightValue;
+            rgbaData[i + 2] = heightValue;
+            rgbaData[i + 3] = 255;
+        }
 
-        D3D12_SUBRESOURCE_DATA subResourceData = {};
-        subResourceData.pData = rgbaData.data();
-        subResourceData.RowPitch = static_cast<LONG_PTR>(width * 4);
-        subResourceData.SlicePitch = subResourceData.RowPitch * height;
-
-        UpdateSubresources(cmdList, texture.Get(), textureUploadHeap.Get(), 0, 0, 1, &subResourceData);
-
-        cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-            texture.Get(),
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
-
-        return S_OK;
+        return CreateTextureFromRGBAData12(device, cmdList, rgbaData, width, height, texture, textureUploadHeap);
     }
     catch (...)
     {
