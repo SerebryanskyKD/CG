@@ -43,13 +43,18 @@ struct Vertex
 	DirectX::XMFLOAT2 TexC;
 };
 
+struct ScatterInstanceData
+{
+	DirectX::XMFLOAT4X4 World = MathHelper::Identity4x4();
+};
+
 // Stores the resources needed for the CPU to build the command lists
 // for a frame.  
 struct FrameResource
 {
 public:
     
-    FrameResource(ID3D12Device* device, UINT passCount, UINT objectCount, UINT materialCount, UINT waveVertCount);
+    FrameResource(ID3D12Device* device, UINT passCount, UINT objectCount, UINT materialCount, UINT waveVertCount, UINT scatterInstanceCount);
     FrameResource(const FrameResource& rhs) = delete;
     FrameResource& operator=(const FrameResource& rhs) = delete;
     ~FrameResource();
@@ -68,6 +73,7 @@ public:
     // We cannot update a dynamic vertex buffer until the GPU is done processing
     // the commands that reference it.  So each frame needs their own.
     std::unique_ptr<UploadBuffer<Vertex>> WavesVB = nullptr;
+    std::unique_ptr<UploadBuffer<ScatterInstanceData>> ScatterInstanceBuffer = nullptr;
 
     // Fence value to mark commands up to this fence point.  This lets us
     // check if these frame resources are still in use by the GPU.

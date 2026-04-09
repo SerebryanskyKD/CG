@@ -11,8 +11,11 @@
 #include "RenderingSystem.h"
 #include "ObjModelLoader.h"
 #include "TgaTextureLoader.h"
+#include <algorithm>
+#include <array>
 #include <cfloat>
 #include <cmath>
+#include <limits>
 #include <unordered_set>
 
 using Microsoft::WRL::ComPtr;
@@ -48,6 +51,122 @@ struct RenderItem
 	UINT StartIndexLocation = 0;
 	int BaseVertexLocation = 0;
 };
+
+struct ScatterInstance
+{
+	XMFLOAT4X4 World = MathHelper::Identity4x4();
+	BoundingBox Bounds;
+};
+
+struct OctreeNode
+{
+	BoundingBox Bounds;
+	std::vector<UINT> InstanceIndices;
+	std::array<std::unique_ptr<OctreeNode>, 8> Children;
+
+	bool IsLeaf() const
+	{
+		for (const auto& child : Children)
+		{
+			if (child)
+				return false;
+		}
+		return true;
+	}
+};
+
+enum class ScatterCullingMode : int
+{
+	Off = 0,
+	Frustum,
+	Octree
+};
+
+namespace
+{
+	XMFLOAT3 Add(const XMFLOAT3& a, const XMFLOAT3& b)
+	{
+		return XMFLOAT3(a.x + b.x, a.y + b.y, a.z + b.z);
+	}
+
+	XMFLOAT3 Subtract(const XMFLOAT3& a, const XMFLOAT3& b)
+	{
+		return XMFLOAT3(a.x - b.x, a.y - b.y, a.z - b.z);
+	}
+
+	BoundingBox MergeBounds(const BoundingBox& a, const BoundingBox& b)
+	{
+		XMFLOAT3 minA = Subtract(a.Center, a.Extents);
+		XMFLOAT3 maxA = Add(a.Center, a.Extents);
+		XMFLOAT3 minB = Subtract(b.Center, b.Extents);
+		XMFLOAT3 maxB = Add(b.Center, b.Extents);
+
+		XMFLOAT3 minP(
+			(std::min)(minA.x, minB.x),
+			(std::min)(minA.y, minB.y),
+			(std::min)(minA.z, minB.z));
+		XMFLOAT3 maxP(
+			(std::max)(maxA.x, maxB.x),
+			(std::max)(maxA.y, maxB.y),
+			(std::max)(maxA.z, maxB.z));
+
+		BoundingBox merged;
+		merged.Center = XMFLOAT3(
+			0.5f * (minP.x + maxP.x),
+			0.5f * (minP.y + maxP.y),
+			0.5f * (minP.z + maxP.z));
+		merged.Extents = XMFLOAT3(
+			0.5f * (maxP.x - minP.x),
+			0.5f * (maxP.y - minP.y),
+			0.5f * (maxP.z - minP.z));
+		return merged;
+	}
+
+	bool ContainsFully(const BoundingBox& outer, const BoundingBox& inner)
+	{
+		const XMFLOAT3 outerMin = Subtract(outer.Center, outer.Extents);
+		const XMFLOAT3 outerMax = Add(outer.Center, outer.Extents);
+		const XMFLOAT3 innerMin = Subtract(inner.Center, inner.Extents);
+		const XMFLOAT3 innerMax = Add(inner.Center, inner.Extents);
+
+		return innerMin.x >= outerMin.x && innerMax.x <= outerMax.x &&
+			innerMin.y >= outerMin.y && innerMax.y <= outerMax.y &&
+			innerMin.z >= outerMin.z && innerMax.z <= outerMax.z;
+	}
+
+	BoundingBox MakeChildBounds(const BoundingBox& parent, int childIndex)
+	{
+		const XMFLOAT3 childExtents(
+			parent.Extents.x * 0.5f,
+			parent.Extents.y * 0.5f,
+			parent.Extents.z * 0.5f);
+
+		const XMFLOAT3 offset(
+			(childIndex & 1) ? childExtents.x : -childExtents.x,
+			(childIndex & 2) ? childExtents.y : -childExtents.y,
+			(childIndex & 4) ? childExtents.z : -childExtents.z);
+
+		BoundingBox childBounds;
+		childBounds.Center = Add(parent.Center, offset);
+		childBounds.Extents = childExtents;
+		return childBounds;
+	}
+
+	const wchar_t* ScatterModeName(ScatterCullingMode mode)
+	{
+		switch (mode)
+		{
+		case ScatterCullingMode::Off:
+			return L"Off";
+		case ScatterCullingMode::Frustum:
+			return L"Frustum";
+		case ScatterCullingMode::Octree:
+			return L"Octree";
+		default:
+			return L"Unknown";
+		}
+	}
+}
 
 enum class RenderLayer : int
 {
@@ -94,16 +213,28 @@ private:
 	void BuildBoxGeometry();
 	void BuildSponzaGeometry();
 	void BuildStonePathwayGeometry();
+	void BuildScatterBoxGeometry();
 	void BuildLightSphereGeometry();
 	void BuildSponzaMaterials();
 	void BuildStonePathwayMaterial();
+	void BuildScatterMaterial();
 	void BuildSponzaRenderItems();
 	void BuildStonePathwayRenderItem();
+	void BuildScatterInstances();
 	void BuildPSOs();
 	void BuildFrameResources();
 	void BuildMaterials();
 	void BuildRenderItems();
 	void DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems);
+	void BuildInstancedRootSignature();
+	void UpdateScatterInstanceData();
+	void DrawScatterInstances(ID3D12GraphicsCommandList* cmdList);
+	void BuildScatterOctree();
+	std::unique_ptr<OctreeNode> BuildScatterOctreeNode(const BoundingBox& bounds, const std::vector<UINT>& instanceIndices, UINT depth);
+	void CollectVisibleScatterInstances(const BoundingFrustum& frustum, std::vector<UINT>& visibleIndices) const;
+	void CollectVisibleScatterInstancesFromNode(const OctreeNode* node, const BoundingFrustum& frustum, std::vector<UINT>& visibleIndices) const;
+	void CollectAllScatterInstancesFromNode(const OctreeNode* node, std::vector<UINT>& visibleIndices) const;
+	void UpdateScatterCaption() const;
 	void BuildLightingRootSignature();
 	void LoadSponzaTextures();
 	void LoadStonePathwayTextures();
@@ -124,6 +255,7 @@ private:
 	UINT mCbvSrvDescriptorSize = 0;
 
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
+	ComPtr<ID3D12RootSignature> mInstancedRootSignature = nullptr;
 
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
 
@@ -184,6 +316,12 @@ private:
 	UINT mGBufferSrvHeapOffset = 0;
 
 	std::vector<DirectX::XMFLOAT3> mGarlandColors;
+	BoundingFrustum mCameraFrustum;
+	BoundingBox mScatterLocalBounds;
+	std::vector<ScatterInstance> mScatterInstances;
+	std::unique_ptr<OctreeNode> mScatterOctree;
+	UINT mScatterVisibleCount = 0;
+	ScatterCullingMode mScatterCullingMode = ScatterCullingMode::Octree;
 };
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
@@ -256,6 +394,7 @@ bool TexWavesApp::Initialize()
 	LoadStonePathwayTextures();
 
 	BuildRootSignature();
+	BuildInstancedRootSignature();
 	BuildDebugRootSignature();
 	BuildLightingRootSignature();
 
@@ -266,15 +405,18 @@ bool TexWavesApp::Initialize()
 	BuildLandGeometry();
 	BuildWavesGeometry();
 	BuildBoxGeometry();
+	BuildScatterBoxGeometry();
 	BuildLightSphereGeometry();
 
 	BuildMaterials();
 	BuildSponzaMaterials();
 	BuildStonePathwayMaterial();
+	BuildScatterMaterial();
 
 	BuildRenderItems();
 	BuildSponzaRenderItems();
 	BuildStonePathwayRenderItem();
+	BuildScatterInstances();
 
 	BuildFrameResources();
 	BuildPSOs();
@@ -297,6 +439,7 @@ void TexWavesApp::OnResize()
 	// The window resized, so update the aspect ratio and recompute the projection matrix.
 	XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f * MathHelper::Pi, AspectRatio(), 1.0f, 1000.0f);
 	XMStoreFloat4x4(&mProj, P);
+	BoundingFrustum::CreateFromMatrix(mCameraFrustum, P);
 	if (mRenderingSystem)
 	{
 		mRenderingSystem->OnResize(mClientWidth, mClientHeight);
@@ -327,6 +470,8 @@ void TexWavesApp::Update(const GameTimer& gt)
 	UpdateMaterialCBs(gt);
 	UpdateMainPassCB(gt);
 	UpdateWaves(gt);
+	UpdateScatterInstanceData();
+	UpdateScatterCaption();
 }
 
 void TexWavesApp::Draw(const GameTimer& gt)
@@ -361,6 +506,8 @@ void TexWavesApp::Draw(const GameTimer& gt)
 
 	mCommandList->SetPipelineState(mPSOs["gbufferTess"].Get());
 	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Tessellated]);
+
+	DrawScatterInstances(mCommandList.Get());
 
 	gbuffer.TransitionToRead(mCommandList.Get());
 
@@ -513,6 +660,7 @@ void TexWavesApp::UpdateCamera(const GameTimer& gt)
 void TexWavesApp::AnimateMaterials(const GameTimer& gt)
 {
 	auto waterMat = mMaterials["water"].get();
+	auto stonePathwayMat = mMaterials["stonePathway"].get();
 
 	float& tu = waterMat->MatTransform(3, 0);
 	float& tv = waterMat->MatTransform(3, 1);
@@ -530,6 +678,14 @@ void TexWavesApp::AnimateMaterials(const GameTimer& gt)
 	waterMat->MatTransform(3, 1) = tv;
 
 	waterMat->NumFramesDirty = gNumFrameResources;
+
+	const float stoneAngle = 0.35f * gt.TotalTime();
+	XMStoreFloat4x4(
+		&stonePathwayMat->MatTransform,
+		XMMatrixTranslation(-0.5f, -0.5f, 0.0f) *
+		XMMatrixRotationZ(stoneAngle) *
+		XMMatrixTranslation(0.5f, 0.5f, 0.0f));
+	stonePathwayMat->NumFramesDirty = gNumFrameResources;
 }
 
 void TexWavesApp::UpdateObjectCBs(const GameTimer& gt)
@@ -891,6 +1047,40 @@ void TexWavesApp::BuildDebugRootSignature()
 		IID_PPV_ARGS(mDebugRootSignature.GetAddressOf())));
 }
 
+void TexWavesApp::BuildInstancedRootSignature()
+{
+	CD3DX12_ROOT_PARAMETER slotRootParameter[3];
+	slotRootParameter[0].InitAsShaderResourceView(0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+	slotRootParameter[1].InitAsConstantBufferView(0);
+	slotRootParameter[2].InitAsConstantBufferView(1);
+
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
+		3,
+		slotRootParameter,
+		0,
+		nullptr,
+		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+	ComPtr<ID3DBlob> serializedRootSig = nullptr;
+	ComPtr<ID3DBlob> errorBlob = nullptr;
+	HRESULT hr = D3D12SerializeRootSignature(
+		&rootSigDesc,
+		D3D_ROOT_SIGNATURE_VERSION_1,
+		serializedRootSig.GetAddressOf(),
+		errorBlob.GetAddressOf());
+
+	if (errorBlob != nullptr)
+		::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+
+	ThrowIfFailed(hr);
+
+	ThrowIfFailed(md3dDevice->CreateRootSignature(
+		0,
+		serializedRootSig->GetBufferPointer(),
+		serializedRootSig->GetBufferSize(),
+		IID_PPV_ARGS(mInstancedRootSignature.GetAddressOf())));
+}
+
 void TexWavesApp::BuildDescriptorHeaps()
 {
 	mTextureSrvHeapIndices.clear();
@@ -964,6 +1154,8 @@ void TexWavesApp::BuildShadersAndInputLayout()
 
 	mShaders["debugVS"] = d3dUtil::CompileShader(L"Shaders\\DebugGBuffer.hlsl", nullptr, "VS", "vs_5_0");
 	mShaders["debugPS"] = d3dUtil::CompileShader(L"Shaders\\DebugGBuffer.hlsl", nullptr, "PS", "ps_5_0");
+	mShaders["instancedGBufferVS"] = d3dUtil::CompileShader(L"Shaders\\InstancedDeferred.hlsl", nullptr, "VS", "vs_5_0");
+	mShaders["instancedGBufferPS"] = d3dUtil::CompileShader(L"Shaders\\InstancedDeferred.hlsl", nullptr, "PS", "ps_5_0");
 
 	mShaders["deferredLightVS"] = d3dUtil::CompileShader(L"Shaders\\DeferredLighting.hlsl", nullptr, "VS", "vs_5_0");
 	mShaders["deferredLightPS"] = d3dUtil::CompileShader(L"Shaders\\DeferredLighting.hlsl", nullptr, "PS", "ps_5_0");
@@ -1266,6 +1458,63 @@ void TexWavesApp::BuildSponzaGeometry()
 	mGeometries[geo->Name] = std::move(geo);
 }
 
+void TexWavesApp::BuildScatterBoxGeometry()
+{
+	GeometryGenerator geoGen;
+	GeometryGenerator::MeshData box = geoGen.CreateBox(1.0f, 1.0f, 1.0f, 0);
+
+	std::vector<Vertex> vertices(box.Vertices.size());
+	for (size_t i = 0; i < box.Vertices.size(); ++i)
+	{
+		vertices[i].Pos = box.Vertices[i].Position;
+		vertices[i].Normal = box.Vertices[i].Normal;
+		vertices[i].TexC = box.Vertices[i].TexC;
+	}
+
+	const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
+	std::vector<std::uint16_t> indices = box.GetIndices16();
+	const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
+
+	auto geo = std::make_unique<MeshGeometry>();
+	geo->Name = "scatterBoxGeo";
+
+	ThrowIfFailed(D3DCreateBlob(vbByteSize, &geo->VertexBufferCPU));
+	CopyMemory(geo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
+
+	ThrowIfFailed(D3DCreateBlob(ibByteSize, &geo->IndexBufferCPU));
+	CopyMemory(geo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
+
+	geo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(
+		md3dDevice.Get(),
+		mCommandList.Get(),
+		vertices.data(),
+		vbByteSize,
+		geo->VertexBufferUploader);
+
+	geo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(
+		md3dDevice.Get(),
+		mCommandList.Get(),
+		indices.data(),
+		ibByteSize,
+		geo->IndexBufferUploader);
+
+	geo->VertexByteStride = sizeof(Vertex);
+	geo->VertexBufferByteSize = vbByteSize;
+	geo->IndexFormat = DXGI_FORMAT_R16_UINT;
+	geo->IndexBufferByteSize = ibByteSize;
+
+	SubmeshGeometry submesh;
+	submesh.IndexCount = (UINT)indices.size();
+	submesh.StartIndexLocation = 0;
+	submesh.BaseVertexLocation = 0;
+
+	geo->DrawArgs["scatterBox"] = submesh;
+	mGeometries[geo->Name] = std::move(geo);
+
+	mScatterLocalBounds.Center = XMFLOAT3(0.0f, 0.0f, 0.0f);
+	mScatterLocalBounds.Extents = XMFLOAT3(0.5f, 0.5f, 0.5f);
+}
+
 void TexWavesApp::BuildStonePathwayGeometry()
 {
 	std::filesystem::path objPath = L"Assets/StonePathway/StonePathway.obj";
@@ -1456,6 +1705,25 @@ void TexWavesApp::BuildStonePathwayMaterial()
 	mMaterials[mat->Name] = std::move(mat);
 }
 
+void TexWavesApp::BuildScatterMaterial()
+{
+	if (mMaterials.find("scatterBox") != mMaterials.end())
+		return;
+
+	auto mat = std::make_unique<Material>();
+	mat->Name = "scatterBox";
+	mat->MatCBIndex = (int)mMaterials.size();
+	mat->DiffuseSrvHeapIndex = 0;
+	mat->NormalSrvHeapIndex = (int)mTextureSrvHeapIndices["defaultNormalTex"];
+	mat->DisplacementSrvHeapIndex = (int)mTextureSrvHeapIndices["defaultDisplacementTex"];
+	mat->DiffuseAlbedo = XMFLOAT4(0.90f, 0.35f, 0.20f, 1.0f);
+	mat->FresnelR0 = XMFLOAT3(0.04f, 0.04f, 0.04f);
+	mat->Roughness = 0.55f;
+	XMStoreFloat4x4(&mat->MatTransform, XMMatrixIdentity());
+
+	mMaterials[mat->Name] = std::move(mat);
+}
+
 void TexWavesApp::BuildSponzaRenderItems()
 {
 	// ------------------------------------------------------------
@@ -1622,6 +1890,23 @@ void TexWavesApp::BuildPSOs()
 		&gbufferPsoDesc,
 		IID_PPV_ARGS(&mPSOs["gbuffer"])));
 
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC instancedGBufferPsoDesc = gbufferPsoDesc;
+	instancedGBufferPsoDesc.pRootSignature = mInstancedRootSignature.Get();
+	instancedGBufferPsoDesc.VS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["instancedGBufferVS"]->GetBufferPointer()),
+		mShaders["instancedGBufferVS"]->GetBufferSize()
+	};
+	instancedGBufferPsoDesc.PS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["instancedGBufferPS"]->GetBufferPointer()),
+		mShaders["instancedGBufferPS"]->GetBufferSize()
+	};
+
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+		&instancedGBufferPsoDesc,
+		IID_PPV_ARGS(&mPSOs["instancedGBuffer"])));
+
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC tessPsoDesc = gbufferPsoDesc;
 	tessPsoDesc.VS =
 	{
@@ -1718,7 +2003,7 @@ void TexWavesApp::BuildFrameResources()
 	for (int i = 0; i < gNumFrameResources; ++i)
 	{
 		mFrameResources.push_back(std::make_unique<FrameResource>(md3dDevice.Get(),
-			1, (UINT)mAllRitems.size(), (UINT)mMaterials.size(), mWaves->VertexCount()));
+			1, (UINT)mAllRitems.size(), (UINT)mMaterials.size(), mWaves->VertexCount(), (UINT)(std::max<size_t>(1, mScatterInstances.size()))));
 	}
 }
 
@@ -2061,7 +2346,7 @@ void TexWavesApp::BuildStonePathwayRenderItem()
 		XMMatrixTranslation(0.0f, 3.3f, 8.0f);
 
 	XMStoreFloat4x4(&ri->World, world);
-	XMStoreFloat4x4(&ri->TexTransform, XMMatrixIdentity());
+	XMStoreFloat4x4(&ri->TexTransform, XMMatrixScaling(2.5f, 2.5f, 1.0f));
 
 	ri->ObjCBIndex = (UINT)mAllRitems.size();
 	ri->Mat = mat;
@@ -2073,6 +2358,268 @@ void TexWavesApp::BuildStonePathwayRenderItem()
 
 	mRitemLayer[(int)RenderLayer::Tessellated].push_back(ri.get());
 	mAllRitems.push_back(std::move(ri));
+}
+
+void TexWavesApp::BuildScatterInstances()
+{
+	mScatterInstances.clear();
+	mScatterInstances.reserve(4096);
+
+	const int countX = 20;
+	const int countY = 8;
+	const int countZ = 20;
+	const float spacing = 8.0f;
+	const XMFLOAT3 origin = XMFLOAT3(-76.0f, 1.0f, -76.0f);
+
+	for (int y = 0; y < countY; ++y)
+	{
+		for (int z = 0; z < countZ; ++z)
+		{
+			for (int x = 0; x < countX; ++x)
+			{
+				const float worldX = origin.x + x * spacing;
+				const float worldY = origin.y + y * 4.5f;
+				const float worldZ = origin.z + z * spacing;
+
+				XMMATRIX world =
+					XMMatrixScaling(0.8f, 0.8f, 0.8f) *
+					XMMatrixTranslation(worldX, worldY, worldZ);
+
+				ScatterInstance instance;
+				XMStoreFloat4x4(&instance.World, world);
+				mScatterLocalBounds.Transform(instance.Bounds, world);
+
+				mScatterInstances.push_back(instance);
+			}
+		}
+	}
+
+	BuildScatterOctree();
+}
+
+void TexWavesApp::BuildScatterOctree()
+{
+	mScatterOctree.reset();
+
+	if (mScatterInstances.empty())
+		return;
+
+	BoundingBox rootBounds = mScatterInstances.front().Bounds;
+	std::vector<UINT> instanceIndices;
+	instanceIndices.reserve(mScatterInstances.size());
+
+	for (UINT i = 0; i < (UINT)mScatterInstances.size(); ++i)
+	{
+		rootBounds = MergeBounds(rootBounds, mScatterInstances[i].Bounds);
+		instanceIndices.push_back(i);
+	}
+
+	rootBounds.Extents.x += 0.01f;
+	rootBounds.Extents.y += 0.01f;
+	rootBounds.Extents.z += 0.01f;
+
+	mScatterOctree = BuildScatterOctreeNode(rootBounds, instanceIndices, 0);
+}
+
+std::unique_ptr<OctreeNode> TexWavesApp::BuildScatterOctreeNode(const BoundingBox& bounds, const std::vector<UINT>& instanceIndices, UINT depth)
+{
+	auto node = std::make_unique<OctreeNode>();
+	node->Bounds = bounds;
+
+	const UINT kMaxDepth = 6;
+	const size_t kLeafCapacity = 32;
+
+	if (depth >= kMaxDepth || instanceIndices.size() <= kLeafCapacity)
+	{
+		node->InstanceIndices = instanceIndices;
+		return node;
+	}
+
+	std::array<std::vector<UINT>, 8> childAssignments;
+	std::vector<UINT> retainedIndices;
+
+	for (UINT instanceIndex : instanceIndices)
+	{
+		const BoundingBox& instanceBounds = mScatterInstances[instanceIndex].Bounds;
+		int containingChild = -1;
+
+		for (int childIndex = 0; childIndex < 8; ++childIndex)
+		{
+			const BoundingBox childBounds = MakeChildBounds(bounds, childIndex);
+			if (ContainsFully(childBounds, instanceBounds))
+			{
+				containingChild = childIndex;
+				break;
+			}
+		}
+
+		if (containingChild >= 0)
+			childAssignments[containingChild].push_back(instanceIndex);
+		else
+			retainedIndices.push_back(instanceIndex);
+	}
+
+	bool hasChildren = false;
+	for (int childIndex = 0; childIndex < 8; ++childIndex)
+	{
+		if (!childAssignments[childIndex].empty())
+		{
+			node->Children[childIndex] = BuildScatterOctreeNode(
+				MakeChildBounds(bounds, childIndex),
+				childAssignments[childIndex],
+				depth + 1);
+			hasChildren = true;
+		}
+	}
+
+	if (!hasChildren)
+		node->InstanceIndices = instanceIndices;
+	else
+		node->InstanceIndices = std::move(retainedIndices);
+
+	return node;
+}
+
+void TexWavesApp::CollectVisibleScatterInstances(const BoundingFrustum& frustum, std::vector<UINT>& visibleIndices) const
+{
+	visibleIndices.clear();
+	visibleIndices.reserve(mScatterInstances.size());
+
+	switch (mScatterCullingMode)
+	{
+	case ScatterCullingMode::Off:
+		for (UINT i = 0; i < (UINT)mScatterInstances.size(); ++i)
+			visibleIndices.push_back(i);
+		break;
+
+	case ScatterCullingMode::Frustum:
+		for (UINT i = 0; i < (UINT)mScatterInstances.size(); ++i)
+		{
+			if (frustum.Contains(mScatterInstances[i].Bounds) != DirectX::DISJOINT)
+				visibleIndices.push_back(i);
+		}
+		break;
+
+	case ScatterCullingMode::Octree:
+		if (mScatterOctree)
+			CollectVisibleScatterInstancesFromNode(mScatterOctree.get(), frustum, visibleIndices);
+		break;
+	}
+}
+
+void TexWavesApp::CollectVisibleScatterInstancesFromNode(const OctreeNode* node, const BoundingFrustum& frustum, std::vector<UINT>& visibleIndices) const
+{
+	if (node == nullptr)
+		return;
+
+	const ContainmentType nodeContainment = frustum.Contains(node->Bounds);
+	if (nodeContainment == DirectX::DISJOINT)
+		return;
+
+	if (nodeContainment == DirectX::CONTAINS)
+	{
+		CollectAllScatterInstancesFromNode(node, visibleIndices);
+		return;
+	}
+
+	for (UINT instanceIndex : node->InstanceIndices)
+	{
+		if (frustum.Contains(mScatterInstances[instanceIndex].Bounds) != DirectX::DISJOINT)
+			visibleIndices.push_back(instanceIndex);
+	}
+
+	for (const auto& child : node->Children)
+	{
+		if (child)
+			CollectVisibleScatterInstancesFromNode(child.get(), frustum, visibleIndices);
+	}
+}
+
+void TexWavesApp::CollectAllScatterInstancesFromNode(const OctreeNode* node, std::vector<UINT>& visibleIndices) const
+{
+	if (node == nullptr)
+		return;
+
+	visibleIndices.insert(visibleIndices.end(), node->InstanceIndices.begin(), node->InstanceIndices.end());
+
+	for (const auto& child : node->Children)
+	{
+		if (child)
+			CollectAllScatterInstancesFromNode(child.get(), visibleIndices);
+	}
+}
+
+void TexWavesApp::UpdateScatterInstanceData()
+{
+	if (mScatterInstances.empty())
+	{
+		mScatterVisibleCount = 0;
+		return;
+	}
+
+	XMMATRIX view = XMLoadFloat4x4(&mView);
+	XMVECTOR detView = XMMatrixDeterminant(view);
+	XMMATRIX invView = XMMatrixInverse(&detView, view);
+
+	BoundingFrustum worldFrustum;
+	mCameraFrustum.Transform(worldFrustum, invView);
+
+	std::vector<UINT> visibleIndices;
+	CollectVisibleScatterInstances(worldFrustum, visibleIndices);
+
+	auto currInstanceBuffer = mCurrFrameResource->ScatterInstanceBuffer.get();
+	for (UINT i = 0; i < (UINT)visibleIndices.size(); ++i)
+	{
+		ScatterInstanceData instanceData;
+		XMMATRIX world = XMLoadFloat4x4(&mScatterInstances[visibleIndices[i]].World);
+		XMStoreFloat4x4(&instanceData.World, XMMatrixTranspose(world));
+		currInstanceBuffer->CopyData(i, instanceData);
+	}
+
+	mScatterVisibleCount = (UINT)visibleIndices.size();
+}
+
+void TexWavesApp::DrawScatterInstances(ID3D12GraphicsCommandList* cmdList)
+{
+	if (mScatterVisibleCount == 0)
+		return;
+
+	auto geo = mGeometries["scatterBoxGeo"].get();
+	auto mat = mMaterials["scatterBox"].get();
+	auto passCB = mCurrFrameResource->PassCB->Resource();
+	auto materialCB = mCurrFrameResource->MaterialCB->Resource();
+	D3D12_VERTEX_BUFFER_VIEW vbView = geo->VertexBufferView();
+	D3D12_INDEX_BUFFER_VIEW ibView = geo->IndexBufferView();
+
+	const UINT matCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(MaterialConstants));
+	D3D12_GPU_VIRTUAL_ADDRESS matCBAddress =
+		materialCB->GetGPUVirtualAddress() + (UINT64)mat->MatCBIndex * matCBByteSize;
+
+	cmdList->SetPipelineState(mPSOs["instancedGBuffer"].Get());
+	cmdList->SetGraphicsRootSignature(mInstancedRootSignature.Get());
+	cmdList->SetGraphicsRootShaderResourceView(0, mCurrFrameResource->ScatterInstanceBuffer->Resource()->GetGPUVirtualAddress());
+	cmdList->SetGraphicsRootConstantBufferView(1, passCB->GetGPUVirtualAddress());
+	cmdList->SetGraphicsRootConstantBufferView(2, matCBAddress);
+	cmdList->IASetVertexBuffers(0, 1, &vbView);
+	cmdList->IASetIndexBuffer(&ibView);
+	cmdList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	cmdList->DrawIndexedInstanced(
+		geo->DrawArgs["scatterBox"].IndexCount,
+		mScatterVisibleCount,
+		geo->DrawArgs["scatterBox"].StartIndexLocation,
+		geo->DrawArgs["scatterBox"].BaseVertexLocation,
+		0);
+}
+
+void TexWavesApp::UpdateScatterCaption() const
+{
+	const std::wstring caption =
+		L"Сколько кубов показывается: " +
+		std::to_wstring(mScatterVisibleCount) +
+		L"/" +
+		std::to_wstring(mScatterInstances.size());
+
+	const_cast<TexWavesApp*>(this)->mMainWndCaption = caption;
 }
 
 void TexWavesApp::LoadStonePathwayTextures()
