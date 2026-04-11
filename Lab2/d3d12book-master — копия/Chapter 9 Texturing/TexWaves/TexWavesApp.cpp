@@ -55,6 +55,12 @@ struct RenderItem
 struct ScatterInstance
 {
 	XMFLOAT4X4 World = MathHelper::Identity4x4();
+	XMFLOAT3 Position = XMFLOAT3(0.0f, 0.0f, 0.0f);
+	float Scale = 1.0f;
+	float BaseAngle = 0.0f;
+	float RotationSpeed = 1.0f;
+	UINT UpdateStride = 1;
+	UINT LastAnimationFrame = UINT(-1);
 	BoundingBox Bounds;
 };
 
@@ -322,6 +328,7 @@ private:
 	std::unique_ptr<OctreeNode> mScatterOctree;
 	UINT mScatterVisibleCount = 0;
 	ScatterCullingMode mScatterCullingMode = ScatterCullingMode::Octree;
+	UINT mScatterAnimationFrame = 0;
 };
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
@@ -1512,7 +1519,7 @@ void TexWavesApp::BuildScatterBoxGeometry()
 	mGeometries[geo->Name] = std::move(geo);
 
 	mScatterLocalBounds.Center = XMFLOAT3(0.0f, 0.0f, 0.0f);
-	mScatterLocalBounds.Extents = XMFLOAT3(0.5f, 0.5f, 0.5f);
+	mScatterLocalBounds.Extents = XMFLOAT3(0.71f, 0.5f, 0.71f);
 }
 
 void TexWavesApp::BuildStonePathwayGeometry()
@@ -2380,13 +2387,20 @@ void TexWavesApp::BuildScatterInstances()
 				const float worldX = origin.x + x * spacing;
 				const float worldY = origin.y + y * 4.5f;
 				const float worldZ = origin.z + z * spacing;
+				const float scale = 0.8f;
+				const float baseAngle = 0.35f * (float)((x + z) % 9);
+				const float rotationSpeed = 0.65f + 0.05f * (float)((x + y + z) % 7);
 
 				XMMATRIX world =
-					XMMatrixScaling(0.8f, 0.8f, 0.8f) *
+					XMMatrixScaling(scale, scale, scale) *
 					XMMatrixTranslation(worldX, worldY, worldZ);
 
 				ScatterInstance instance;
 				XMStoreFloat4x4(&instance.World, world);
+				instance.Position = XMFLOAT3(worldX, worldY, worldZ);
+				instance.Scale = scale;
+				instance.BaseAngle = baseAngle;
+				instance.RotationSpeed = rotationSpeed;
 				mScatterLocalBounds.Transform(instance.Bounds, world);
 
 				mScatterInstances.push_back(instance);
@@ -2557,6 +2571,8 @@ void TexWavesApp::UpdateScatterInstanceData()
 		return;
 	}
 
+	++mScatterAnimationFrame;
+
 	XMMATRIX view = XMLoadFloat4x4(&mView);
 	XMVECTOR detView = XMMatrixDeterminant(view);
 	XMMATRIX invView = XMMatrixInverse(&detView, view);
@@ -2570,8 +2586,39 @@ void TexWavesApp::UpdateScatterInstanceData()
 	auto currInstanceBuffer = mCurrFrameResource->ScatterInstanceBuffer.get();
 	for (UINT i = 0; i < (UINT)visibleIndices.size(); ++i)
 	{
+		ScatterInstance& instance = mScatterInstances[visibleIndices[i]];
+		const XMVECTOR eyePos = XMLoadFloat3(&mEyePos);
+		const XMVECTOR instancePos = XMLoadFloat3(&instance.Position);
+		const float distanceToCamera = XMVectorGetX(XMVector3Length(instancePos - eyePos));
+
+		UINT updateStride = 4;
+		if (distanceToCamera < 45.0f)
+			updateStride = 1;
+		else if (distanceToCamera < 90.0f)
+			updateStride = 2;
+
+		const bool strideChanged = instance.UpdateStride != updateStride;
+		const bool shouldUpdateNow =
+			strideChanged ||
+			instance.LastAnimationFrame == UINT(-1) ||
+			(mScatterAnimationFrame % updateStride) == 0;
+
+		instance.UpdateStride = updateStride;
+
+		if (shouldUpdateNow)
+		{
+			const float angle = instance.BaseAngle + mMainPassCB.TotalTime * instance.RotationSpeed;
+			XMMATRIX world =
+				XMMatrixScaling(instance.Scale, instance.Scale, instance.Scale) *
+				XMMatrixRotationY(angle) *
+				XMMatrixTranslation(instance.Position.x, instance.Position.y, instance.Position.z);
+
+			XMStoreFloat4x4(&instance.World, world);
+			instance.LastAnimationFrame = mScatterAnimationFrame;
+		}
+
 		ScatterInstanceData instanceData;
-		XMMATRIX world = XMLoadFloat4x4(&mScatterInstances[visibleIndices[i]].World);
+		XMMATRIX world = XMLoadFloat4x4(&instance.World);
 		XMStoreFloat4x4(&instanceData.World, XMMatrixTranspose(world));
 		currInstanceBuffer->CopyData(i, instanceData);
 	}
