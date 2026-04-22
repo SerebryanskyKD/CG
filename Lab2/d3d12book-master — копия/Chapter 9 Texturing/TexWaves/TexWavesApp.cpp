@@ -15,6 +15,7 @@
 #include <array>
 #include <cfloat>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <unordered_set>
 
@@ -26,6 +27,7 @@ using namespace DirectX::PackedVector;
 #pragma comment(lib, "D3D12.lib")
 
 const int gNumFrameResources = 3;
+const UINT gMaxParticles = 4096;
 
 struct RenderItem
 {
@@ -62,6 +64,17 @@ struct ScatterInstance
 	UINT UpdateStride = 1;
 	UINT LastAnimationFrame = UINT(-1);
 	BoundingBox Bounds;
+};
+
+struct ParticleVertex
+{
+	XMFLOAT3 Position = XMFLOAT3(0.0f, 0.0f, 0.0f);
+	float Age = 0.0f;
+	XMFLOAT3 Velocity = XMFLOAT3(0.0f, 0.0f, 0.0f);
+	float LifeTime = 0.0f;
+	XMFLOAT4 Color = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+	float Size = 1.0f;
+	XMFLOAT3 Pad = XMFLOAT3(0.0f, 0.0f, 0.0f);
 };
 
 struct OctreeNode
@@ -213,6 +226,8 @@ private:
 	void BuildDescriptorHeaps();
 	void BuildGBufferDescriptorHeaps();
 	void BuildDebugRootSignature();
+	void BuildParticleUpdateRootSignature();
+	void BuildParticleDrawRootSignature();
 	void BuildShadersAndInputLayout();
 	void BuildLandGeometry();
 	void BuildWavesGeometry();
@@ -235,6 +250,9 @@ private:
 	void BuildInstancedRootSignature();
 	void UpdateScatterInstanceData();
 	void DrawScatterInstances(ID3D12GraphicsCommandList* cmdList);
+	void BuildParticleResources();
+	void UpdateParticles(const GameTimer& gt, ID3D12GraphicsCommandList* cmdList);
+	void DrawParticles(ID3D12GraphicsCommandList* cmdList);
 	void BuildScatterOctree();
 	std::unique_ptr<OctreeNode> BuildScatterOctreeNode(const BoundingBox& bounds, const std::vector<UINT>& instanceIndices, UINT depth);
 	void CollectVisibleScatterInstances(const BoundingFrustum& frustum, std::vector<UINT>& visibleIndices) const;
@@ -269,6 +287,8 @@ private:
 	ComPtr<ID3D12DescriptorHeap> mGBufferDsvHeap = nullptr;
 
 	ComPtr<ID3D12RootSignature> mDebugRootSignature = nullptr;
+	ComPtr<ID3D12RootSignature> mParticleUpdateRootSignature = nullptr;
+	ComPtr<ID3D12RootSignature> mParticleDrawRootSignature = nullptr;
 
 	ComPtr<ID3D12RootSignature> mLightingRootSignature = nullptr;
 
@@ -320,6 +340,7 @@ private:
 	std::unordered_map<std::string, UINT> mTextureSrvHeapIndices;
 	std::vector<std::string> mOrderedTextureNames;
 	UINT mGBufferSrvHeapOffset = 0;
+	UINT mParticleUavHeapOffset = 0;
 
 	std::vector<DirectX::XMFLOAT3> mGarlandColors;
 	BoundingFrustum mCameraFrustum;
@@ -329,6 +350,18 @@ private:
 	UINT mScatterVisibleCount = 0;
 	ScatterCullingMode mScatterCullingMode = ScatterCullingMode::Octree;
 	UINT mScatterAnimationFrame = 0;
+
+	std::array<ComPtr<ID3D12Resource>, 2> mParticleBuffers;
+	std::array<ComPtr<ID3D12Resource>, 2> mParticleCounterBuffers;
+	std::array<ComPtr<ID3D12Resource>, 2> mParticleAliveCountBuffers;
+	std::array<ComPtr<ID3D12Resource>, gNumFrameResources> mParticleAliveReadbackBuffers;
+	std::array<CD3DX12_GPU_DESCRIPTOR_HANDLE, 2> mParticleUavGpuHandles;
+	std::array<CD3DX12_CPU_DESCRIPTOR_HANDLE, 2> mParticleUavCpuHandles;
+	ComPtr<ID3D12Resource> mParticleCounterResetUpload = nullptr;
+	ComPtr<ID3D12Resource> mParticleAliveCountResetUpload = nullptr;
+	UINT mCurrentParticleBuffer = 0;
+	UINT mParticleAliveCountCpu = 0;
+	XMFLOAT3 mParticleEmitterPos = XMFLOAT3(0.0f, 5.2f, 8.0f);
 };
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
@@ -403,7 +436,10 @@ bool TexWavesApp::Initialize()
 	BuildRootSignature();
 	BuildInstancedRootSignature();
 	BuildDebugRootSignature();
+	BuildParticleUpdateRootSignature();
+	BuildParticleDrawRootSignature();
 	BuildLightingRootSignature();
+	BuildParticleResources();
 
 	BuildDescriptorHeaps();
 	BuildGBufferDescriptorHeaps();
@@ -472,6 +508,11 @@ void TexWavesApp::Update(const GameTimer& gt)
 		CloseHandle(eventHandle);
 	}
 
+	void* particleAliveData = nullptr;
+	ThrowIfFailed(mParticleAliveReadbackBuffers[mCurrFrameResourceIndex]->Map(0, nullptr, &particleAliveData));
+	mParticleAliveCountCpu = *reinterpret_cast<const UINT*>(particleAliveData);
+	mParticleAliveReadbackBuffers[mCurrFrameResourceIndex]->Unmap(0, nullptr);
+
 	AnimateMaterials(gt);
 	UpdateObjectCBs(gt);
 	UpdateMaterialCBs(gt);
@@ -491,6 +532,10 @@ void TexWavesApp::Draw(const GameTimer& gt)
 	mCommandList->RSSetViewports(1, &mScreenViewport);
 	mCommandList->RSSetScissorRects(1, &mScissorRect);
 
+	ID3D12DescriptorHeap* descriptorHeaps[] = { mSrvDescriptorHeap.Get() };
+	mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+	UpdateParticles(gt, mCommandList.Get());
+
 	auto& gbuffer = mRenderingSystem->GetGBuffer();
 
 	mCommandList->SetPipelineState(mPSOs["gbuffer"].Get());
@@ -500,9 +545,6 @@ void TexWavesApp::Draw(const GameTimer& gt)
 	const float gbufferClear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 	gbuffer.Clear(mCommandList.Get(), gbufferClear);
 	gbuffer.SetAsRenderTarget(mCommandList.Get());
-
-	ID3D12DescriptorHeap* descriptorHeaps[] = { mSrvDescriptorHeap.Get() };
-	mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
 
 	mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
 
@@ -539,6 +581,18 @@ void TexWavesApp::Draw(const GameTimer& gt)
 	mCommandList->IASetIndexBuffer(nullptr);
 	mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	mCommandList->DrawInstanced(3, 1, 0, 0);
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		gbuffer.GetDepthBuffer(),
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+		D3D12_RESOURCE_STATE_DEPTH_READ));
+	D3D12_CPU_DESCRIPTOR_HANDLE particleDepth = gbuffer.GetDsv();
+	mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &particleDepth);
+	DrawParticles(mCommandList.Get());
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		gbuffer.GetDepthBuffer(),
+		D3D12_RESOURCE_STATE_DEPTH_READ,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
 
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
 		CurrentBackBuffer(),
@@ -924,6 +978,132 @@ void TexWavesApp::UpdateWaves(const GameTimer& gt)
 	mWavesRitem->Geo->VertexBufferGPU = currWavesVB->Resource();
 }
 
+void TexWavesApp::UpdateParticles(const GameTimer& gt, ID3D12GraphicsCommandList* cmdList)
+{
+	const UINT inputIndex = mCurrentParticleBuffer;
+	const UINT outputIndex = 1 - mCurrentParticleBuffer;
+
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mParticleBuffers[inputIndex].Get(),
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mParticleBuffers[outputIndex].Get(),
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mParticleCounterBuffers[inputIndex].Get(),
+		D3D12_RESOURCE_STATE_COPY_SOURCE,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mParticleCounterBuffers[outputIndex].Get(),
+		D3D12_RESOURCE_STATE_COPY_SOURCE,
+		D3D12_RESOURCE_STATE_COPY_DEST));
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mParticleAliveCountBuffers[outputIndex].Get(),
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+		D3D12_RESOURCE_STATE_COPY_DEST));
+	cmdList->CopyBufferRegion(
+		mParticleCounterBuffers[outputIndex].Get(),
+		0,
+		mParticleCounterResetUpload.Get(),
+		0,
+		sizeof(UINT));
+	cmdList->CopyBufferRegion(
+		mParticleAliveCountBuffers[outputIndex].Get(),
+		0,
+		mParticleAliveCountResetUpload.Get(),
+		0,
+		sizeof(UINT));
+
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mParticleCounterBuffers[outputIndex].Get(),
+		D3D12_RESOURCE_STATE_COPY_DEST,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mParticleAliveCountBuffers[outputIndex].Get(),
+		D3D12_RESOURCE_STATE_COPY_DEST,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+
+	cmdList->SetPipelineState(mPSOs["particleUpdate"].Get());
+	cmdList->SetComputeRootSignature(mParticleUpdateRootSignature.Get());
+
+	const float particleConstants[12] =
+	{
+		gt.DeltaTime(),
+		gt.TotalTime(),
+		0.0f,
+		0.0f,
+		mParticleEmitterPos.x,
+		mParticleEmitterPos.y,
+		mParticleEmitterPos.z,
+		28.0f,
+		(float)gMaxParticles,
+		0.45f,
+		0.0f,
+		0.0f
+	};
+
+	cmdList->SetComputeRoot32BitConstants(0, 12, particleConstants, 0);
+	cmdList->SetComputeRootShaderResourceView(1, mParticleAliveCountBuffers[inputIndex]->GetGPUVirtualAddress());
+	cmdList->SetComputeRootDescriptorTable(2, mParticleUavGpuHandles[inputIndex]);
+	cmdList->SetComputeRootDescriptorTable(3, mParticleUavGpuHandles[outputIndex]);
+	cmdList->SetComputeRootUnorderedAccessView(4, mParticleAliveCountBuffers[outputIndex]->GetGPUVirtualAddress());
+	cmdList->SetComputeRootUnorderedAccessView(5, mParticleBuffers[outputIndex]->GetGPUVirtualAddress());
+
+	cmdList->Dispatch(1, 1, 1);
+
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(mParticleBuffers[inputIndex].Get()));
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(mParticleBuffers[outputIndex].Get()));
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(mParticleCounterBuffers[inputIndex].Get()));
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(mParticleCounterBuffers[outputIndex].Get()));
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(mParticleAliveCountBuffers[outputIndex].Get()));
+
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mParticleCounterBuffers[inputIndex].Get(),
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+		D3D12_RESOURCE_STATE_COPY_SOURCE));
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mParticleAliveCountBuffers[outputIndex].Get(),
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+		D3D12_RESOURCE_STATE_COPY_SOURCE));
+
+	cmdList->CopyBufferRegion(
+		mParticleAliveReadbackBuffers[mCurrFrameResourceIndex].Get(),
+		0,
+		mParticleAliveCountBuffers[outputIndex].Get(),
+		0,
+		sizeof(UINT));
+
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mParticleAliveCountBuffers[outputIndex].Get(),
+		D3D12_RESOURCE_STATE_COPY_SOURCE,
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mParticleBuffers[inputIndex].Get(),
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mParticleBuffers[outputIndex].Get(),
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+
+	mCurrentParticleBuffer = outputIndex;
+}
+
+void TexWavesApp::DrawParticles(ID3D12GraphicsCommandList* cmdList)
+{
+	cmdList->SetPipelineState(mPSOs["particles"].Get());
+	cmdList->SetGraphicsRootSignature(mParticleDrawRootSignature.Get());
+	cmdList->SetGraphicsRootShaderResourceView(0, mParticleBuffers[mCurrentParticleBuffer]->GetGPUVirtualAddress());
+	cmdList->SetGraphicsRootShaderResourceView(1, mParticleAliveCountBuffers[mCurrentParticleBuffer]->GetGPUVirtualAddress());
+	cmdList->SetGraphicsRootConstantBufferView(2, mCurrFrameResource->PassCB->Resource()->GetGPUVirtualAddress());
+	cmdList->IASetVertexBuffers(0, 0, nullptr);
+	cmdList->IASetIndexBuffer(nullptr);
+	cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+	cmdList->DrawInstanced(gMaxParticles, 1, 0, 0);
+}
+
 void TexWavesApp::LoadTextures()
 {
 	mOrderedTextureNames.clear();
@@ -1088,14 +1268,189 @@ void TexWavesApp::BuildInstancedRootSignature()
 		IID_PPV_ARGS(mInstancedRootSignature.GetAddressOf())));
 }
 
+void TexWavesApp::BuildParticleUpdateRootSignature()
+{
+	CD3DX12_DESCRIPTOR_RANGE inputUavRange;
+	inputUavRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+
+	CD3DX12_DESCRIPTOR_RANGE outputUavRange;
+	outputUavRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 1);
+
+	CD3DX12_ROOT_PARAMETER slotRootParameter[6];
+	slotRootParameter[0].InitAsConstants(12, 0);
+	slotRootParameter[1].InitAsShaderResourceView(0);
+	slotRootParameter[2].InitAsDescriptorTable(1, &inputUavRange);
+	slotRootParameter[3].InitAsDescriptorTable(1, &outputUavRange);
+	slotRootParameter[4].InitAsUnorderedAccessView(2);
+	slotRootParameter[5].InitAsUnorderedAccessView(3);
+
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
+		6,
+		slotRootParameter,
+		0,
+		nullptr,
+		D3D12_ROOT_SIGNATURE_FLAG_NONE);
+
+	ComPtr<ID3DBlob> serializedRootSig = nullptr;
+	ComPtr<ID3DBlob> errorBlob = nullptr;
+	HRESULT hr = D3D12SerializeRootSignature(
+		&rootSigDesc,
+		D3D_ROOT_SIGNATURE_VERSION_1,
+		serializedRootSig.GetAddressOf(),
+		errorBlob.GetAddressOf());
+
+	if (errorBlob != nullptr)
+		::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+
+	ThrowIfFailed(hr);
+
+	ThrowIfFailed(md3dDevice->CreateRootSignature(
+		0,
+		serializedRootSig->GetBufferPointer(),
+		serializedRootSig->GetBufferSize(),
+		IID_PPV_ARGS(mParticleUpdateRootSignature.GetAddressOf())));
+}
+
+void TexWavesApp::BuildParticleDrawRootSignature()
+{
+	CD3DX12_ROOT_PARAMETER slotRootParameter[3];
+	slotRootParameter[0].InitAsShaderResourceView(0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+	slotRootParameter[1].InitAsShaderResourceView(1, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+	slotRootParameter[2].InitAsConstantBufferView(1);
+
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
+		3,
+		slotRootParameter,
+		0,
+		nullptr,
+		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+	ComPtr<ID3DBlob> serializedRootSig = nullptr;
+	ComPtr<ID3DBlob> errorBlob = nullptr;
+	HRESULT hr = D3D12SerializeRootSignature(
+		&rootSigDesc,
+		D3D_ROOT_SIGNATURE_VERSION_1,
+		serializedRootSig.GetAddressOf(),
+		errorBlob.GetAddressOf());
+
+	if (errorBlob != nullptr)
+		::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+
+	ThrowIfFailed(hr);
+
+	ThrowIfFailed(md3dDevice->CreateRootSignature(
+		0,
+		serializedRootSig->GetBufferPointer(),
+		serializedRootSig->GetBufferSize(),
+		IID_PPV_ARGS(mParticleDrawRootSignature.GetAddressOf())));
+}
+
+void TexWavesApp::BuildParticleResources()
+{
+	const UINT64 particleBufferSize = sizeof(ParticleVertex) * gMaxParticles;
+	const UINT64 counterBufferSize = 4096;
+
+	auto particleDesc = CD3DX12_RESOURCE_DESC::Buffer(
+		particleBufferSize,
+		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+	auto counterDesc = CD3DX12_RESOURCE_DESC::Buffer(
+		counterBufferSize,
+		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+	auto aliveCountDesc = CD3DX12_RESOURCE_DESC::Buffer(
+		counterBufferSize,
+		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+	for (UINT i = 0; i < 2; ++i)
+	{
+		ThrowIfFailed(md3dDevice->CreateCommittedResource(
+			&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+			D3D12_HEAP_FLAG_NONE,
+			&particleDesc,
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+			nullptr,
+			IID_PPV_ARGS(&mParticleBuffers[i])));
+
+		ThrowIfFailed(md3dDevice->CreateCommittedResource(
+			&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+			D3D12_HEAP_FLAG_NONE,
+			&counterDesc,
+			D3D12_RESOURCE_STATE_COPY_DEST,
+			nullptr,
+			IID_PPV_ARGS(&mParticleCounterBuffers[i])));
+
+		ThrowIfFailed(md3dDevice->CreateCommittedResource(
+			&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+			D3D12_HEAP_FLAG_NONE,
+			&aliveCountDesc,
+			D3D12_RESOURCE_STATE_COPY_DEST,
+			nullptr,
+			IID_PPV_ARGS(&mParticleAliveCountBuffers[i])));
+	}
+
+	ThrowIfFailed(md3dDevice->CreateCommittedResource(
+		&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+		D3D12_HEAP_FLAG_NONE,
+		&CD3DX12_RESOURCE_DESC::Buffer(counterBufferSize),
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		nullptr,
+		IID_PPV_ARGS(&mParticleCounterResetUpload)));
+
+	ThrowIfFailed(md3dDevice->CreateCommittedResource(
+		&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+		D3D12_HEAP_FLAG_NONE,
+		&CD3DX12_RESOURCE_DESC::Buffer(counterBufferSize),
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		nullptr,
+		IID_PPV_ARGS(&mParticleAliveCountResetUpload)));
+
+	UINT zeroValue = 0;
+	void* mappedData = nullptr;
+	ThrowIfFailed(mParticleCounterResetUpload->Map(0, nullptr, &mappedData));
+	memcpy(mappedData, &zeroValue, sizeof(UINT));
+	mParticleCounterResetUpload->Unmap(0, nullptr);
+
+	ThrowIfFailed(mParticleAliveCountResetUpload->Map(0, nullptr, &mappedData));
+	memcpy(mappedData, &zeroValue, sizeof(UINT));
+	mParticleAliveCountResetUpload->Unmap(0, nullptr);
+
+	for (UINT i = 0; i < gNumFrameResources; ++i)
+	{
+		ThrowIfFailed(md3dDevice->CreateCommittedResource(
+			&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK),
+			D3D12_HEAP_FLAG_NONE,
+			&CD3DX12_RESOURCE_DESC::Buffer(sizeof(UINT)),
+			D3D12_RESOURCE_STATE_COPY_DEST,
+			nullptr,
+			IID_PPV_ARGS(&mParticleAliveReadbackBuffers[i])));
+	}
+
+	for (UINT i = 0; i < 2; ++i)
+	{
+		mCommandList->CopyBufferRegion(mParticleCounterBuffers[i].Get(), 0, mParticleCounterResetUpload.Get(), 0, sizeof(UINT));
+		mCommandList->CopyBufferRegion(mParticleAliveCountBuffers[i].Get(), 0, mParticleAliveCountResetUpload.Get(), 0, sizeof(UINT));
+
+		mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+			mParticleCounterBuffers[i].Get(),
+			D3D12_RESOURCE_STATE_COPY_DEST,
+			D3D12_RESOURCE_STATE_COPY_SOURCE));
+
+		mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+			mParticleAliveCountBuffers[i].Get(),
+			D3D12_RESOURCE_STATE_COPY_DEST,
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+	}
+}
+
 void TexWavesApp::BuildDescriptorHeaps()
 {
 	mTextureSrvHeapIndices.clear();
-
-	mGBufferSrvHeapOffset = (UINT)mOrderedTextureNames.size();
+	mParticleUavHeapOffset = (UINT)mOrderedTextureNames.size();
+	mGBufferSrvHeapOffset = mParticleUavHeapOffset + 2;
 
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-	srvHeapDesc.NumDescriptors = mGBufferSrvHeapOffset + 4; // RT0, RT1, Depth, RT2
+	srvHeapDesc.NumDescriptors = mGBufferSrvHeapOffset + 4; // textures + particle UAVs + RT0, RT1, Depth, RT2
 	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
@@ -1117,6 +1472,33 @@ void TexWavesApp::BuildDescriptorHeaps()
 
 		md3dDevice->CreateShaderResourceView(tex->Resource.Get(), &srvDesc, hDescriptor);
 		mTextureSrvHeapIndices[texName] = i;
+
+		hDescriptor.Offset(1, mCbvSrvDescriptorSize);
+	}
+
+	for (UINT i = 0; i < 2; ++i)
+	{
+		mParticleUavCpuHandles[i] = hDescriptor;
+
+		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+		uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+		uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+		uavDesc.Buffer.FirstElement = 0;
+		uavDesc.Buffer.NumElements = gMaxParticles;
+		uavDesc.Buffer.StructureByteStride = sizeof(ParticleVertex);
+		uavDesc.Buffer.CounterOffsetInBytes = 0;
+		uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+
+		md3dDevice->CreateUnorderedAccessView(
+			mParticleBuffers[i].Get(),
+			mParticleCounterBuffers[i].Get(),
+			&uavDesc,
+			hDescriptor);
+
+		mParticleUavGpuHandles[i] = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+			mParticleUavHeapOffset + i,
+			mCbvSrvDescriptorSize);
 
 		hDescriptor.Offset(1, mCbvSrvDescriptorSize);
 	}
@@ -1163,6 +1545,10 @@ void TexWavesApp::BuildShadersAndInputLayout()
 	mShaders["debugPS"] = d3dUtil::CompileShader(L"Shaders\\DebugGBuffer.hlsl", nullptr, "PS", "ps_5_0");
 	mShaders["instancedGBufferVS"] = d3dUtil::CompileShader(L"Shaders\\InstancedDeferred.hlsl", nullptr, "VS", "vs_5_0");
 	mShaders["instancedGBufferPS"] = d3dUtil::CompileShader(L"Shaders\\InstancedDeferred.hlsl", nullptr, "PS", "ps_5_0");
+	mShaders["particleUpdateCS"] = d3dUtil::CompileShader(L"Shaders\\ParticleUpdate.hlsl", nullptr, "CS", "cs_5_0");
+	mShaders["particleVS"] = d3dUtil::CompileShader(L"Shaders\\ParticleBillboards.hlsl", nullptr, "VS", "vs_5_0");
+	mShaders["particleGS"] = d3dUtil::CompileShader(L"Shaders\\ParticleBillboards.hlsl", nullptr, "GS", "gs_5_0");
+	mShaders["particlePS"] = d3dUtil::CompileShader(L"Shaders\\ParticleBillboards.hlsl", nullptr, "PS", "ps_5_0");
 
 	mShaders["deferredLightVS"] = d3dUtil::CompileShader(L"Shaders\\DeferredLighting.hlsl", nullptr, "VS", "vs_5_0");
 	mShaders["deferredLightPS"] = d3dUtil::CompileShader(L"Shaders\\DeferredLighting.hlsl", nullptr, "PS", "ps_5_0");
@@ -1914,6 +2300,18 @@ void TexWavesApp::BuildPSOs()
 		&instancedGBufferPsoDesc,
 		IID_PPV_ARGS(&mPSOs["instancedGBuffer"])));
 
+	D3D12_COMPUTE_PIPELINE_STATE_DESC particleUpdatePsoDesc = {};
+	particleUpdatePsoDesc.pRootSignature = mParticleUpdateRootSignature.Get();
+	particleUpdatePsoDesc.CS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["particleUpdateCS"]->GetBufferPointer()),
+		mShaders["particleUpdateCS"]->GetBufferSize()
+	};
+
+	ThrowIfFailed(md3dDevice->CreateComputePipelineState(
+		&particleUpdatePsoDesc,
+		IID_PPV_ARGS(&mPSOs["particleUpdate"])));
+
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC tessPsoDesc = gbufferPsoDesc;
 	tessPsoDesc.VS =
 	{
@@ -1972,6 +2370,42 @@ void TexWavesApp::BuildPSOs()
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
 		&debugPsoDesc,
 		IID_PPV_ARGS(&mPSOs["debugGBuffer"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC particlePsoDesc = {};
+	ZeroMemory(&particlePsoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
+	particlePsoDesc.InputLayout = { nullptr, 0 };
+	particlePsoDesc.pRootSignature = mParticleDrawRootSignature.Get();
+	particlePsoDesc.VS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["particleVS"]->GetBufferPointer()),
+		mShaders["particleVS"]->GetBufferSize()
+	};
+	particlePsoDesc.GS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["particleGS"]->GetBufferPointer()),
+		mShaders["particleGS"]->GetBufferSize()
+	};
+	particlePsoDesc.PS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["particlePS"]->GetBufferPointer()),
+		mShaders["particlePS"]->GetBufferSize()
+	};
+	particlePsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	particlePsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+	particlePsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+	particlePsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+	particlePsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+	particlePsoDesc.SampleMask = UINT_MAX;
+	particlePsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+	particlePsoDesc.NumRenderTargets = 1;
+	particlePsoDesc.RTVFormats[0] = mBackBufferFormat;
+	particlePsoDesc.SampleDesc.Count = m4xMsaaState ? 4 : 1;
+	particlePsoDesc.SampleDesc.Quality = m4xMsaaState ? (m4xMsaaQuality - 1) : 0;
+	particlePsoDesc.DSVFormat = mDepthStencilFormat;
+
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+		&particlePsoDesc,
+		IID_PPV_ARGS(&mPSOs["particles"])));
 
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC lightPsoDesc = {};
 	ZeroMemory(&lightPsoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
@@ -2664,7 +3098,9 @@ void TexWavesApp::UpdateScatterCaption() const
 		L"Сколько кубов показывается: " +
 		std::to_wstring(mScatterVisibleCount) +
 		L"/" +
-		std::to_wstring(mScatterInstances.size());
+		std::to_wstring(mScatterInstances.size()) +
+		L" | Частиц: " +
+		std::to_wstring(mParticleAliveCountCpu);
 
 	const_cast<TexWavesApp*>(this)->mMainWndCaption = caption;
 }
