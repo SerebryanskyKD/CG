@@ -1905,7 +1905,7 @@ void TexWavesApp::BuildScatterBoxGeometry()
 	mGeometries[geo->Name] = std::move(geo);
 
 	mScatterLocalBounds.Center = XMFLOAT3(0.0f, 0.0f, 0.0f);
-	mScatterLocalBounds.Extents = XMFLOAT3(0.71f, 0.5f, 0.71f);
+	mScatterLocalBounds.Extents = XMFLOAT3(0.90f, 0.70f, 0.90f);
 }
 
 void TexWavesApp::BuildStonePathwayGeometry()
@@ -2809,8 +2809,12 @@ void TexWavesApp::BuildScatterInstances()
 	const int countX = 20;
 	const int countY = 8;
 	const int countZ = 20;
-	const float spacing = 8.0f;
-	const XMFLOAT3 origin = XMFLOAT3(-76.0f, 1.0f, -76.0f);
+	const float spacing = 11.5f;
+	const float verticalSpacing = 6.0f;
+	const XMFLOAT3 origin = XMFLOAT3(
+		-0.5f * (countX - 1) * spacing,
+		1.0f,
+		-0.5f * (countZ - 1) * spacing);
 
 	for (int y = 0; y < countY; ++y)
 	{
@@ -2819,7 +2823,7 @@ void TexWavesApp::BuildScatterInstances()
 			for (int x = 0; x < countX; ++x)
 			{
 				const float worldX = origin.x + x * spacing;
-				const float worldY = origin.y + y * 4.5f;
+				const float worldY = origin.y + y * verticalSpacing;
 				const float worldZ = origin.z + z * spacing;
 				const float scale = 0.8f;
 				const float baseAngle = 0.35f * (float)((x + z) % 9);

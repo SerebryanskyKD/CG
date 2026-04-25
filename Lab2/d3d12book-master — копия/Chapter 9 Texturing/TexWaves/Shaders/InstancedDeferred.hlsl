@@ -67,11 +67,20 @@ VertexOut VS(VertexIn vin, uint instanceID : SV_InstanceID)
 {
     VertexOut vout = (VertexOut)0.0f;
 
+    float phase = gTotalTime * 2.1f + instanceID * 0.17f;
+    float pulse = 0.5f + 0.5f * sin(phase);
+    float heightScale = lerp(0.68f, 1.22f, pulse);
+    float sideScale = lerp(1.16f, 0.92f, pulse);
+    float3 localScale = float3(sideScale, heightScale, sideScale);
+
+    float3 animatedPosL = vin.PosL * localScale;
+    float3 animatedNormalL = normalize(vin.NormalL / localScale);
+
     float4x4 world = gInstanceData[instanceID].World;
-    float4 posW = mul(float4(vin.PosL, 1.0f), world);
+    float4 posW = mul(float4(animatedPosL, 1.0f), world);
 
     vout.PosW = posW.xyz;
-    vout.NormalW = mul(vin.NormalL, (float3x3)world);
+    vout.NormalW = mul(animatedNormalL, (float3x3)world);
     vout.PosH = mul(posW, gViewProj);
 
     return vout;
