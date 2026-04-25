@@ -191,6 +191,7 @@ enum class RenderLayer : int
 {
 	Opaque = 0,
 	Tessellated,
+	WaterTessellated,
 	Count
 };
 
@@ -555,6 +556,9 @@ void TexWavesApp::Draw(const GameTimer& gt)
 
 	mCommandList->SetPipelineState(mPSOs["gbufferTess"].Get());
 	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Tessellated]);
+
+	mCommandList->SetPipelineState(mPSOs["waterTessSolid"].Get());
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::WaterTessellated]);
 
 	DrawScatterInstances(mCommandList.Get());
 
@@ -952,7 +956,7 @@ void TexWavesApp::UpdateWaves(const GameTimer& gt)
 		int i = MathHelper::Rand(4, mWaves->RowCount() - 5);
 		int j = MathHelper::Rand(4, mWaves->ColumnCount() - 5);
 
-		float r = MathHelper::RandF(0.2f, 0.5f);
+		float r = MathHelper::RandF(0.35f, 0.80f);
 
 		mWaves->Disturb(i, j, r);
 	}
@@ -2340,6 +2344,20 @@ void TexWavesApp::BuildPSOs()
 		&tessPsoDesc,
 		IID_PPV_ARGS(&mPSOs["gbufferTess"])));
 
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC waterTessSolidPsoDesc = tessPsoDesc;
+	waterTessSolidPsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+		&waterTessSolidPsoDesc,
+		IID_PPV_ARGS(&mPSOs["waterTessSolid"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC waterTessWirePsoDesc = waterTessSolidPsoDesc;
+	waterTessWirePsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;
+
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+		&waterTessWirePsoDesc,
+		IID_PPV_ARGS(&mPSOs["waterTessWire"])));
+
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC debugPsoDesc = {};
 	ZeroMemory(&debugPsoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
 	debugPsoDesc.InputLayout = { nullptr, 0 };
@@ -2472,6 +2490,7 @@ void TexWavesApp::BuildMaterials()
 	water->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
 	water->FresnelR0 = XMFLOAT3(0.2f, 0.2f, 0.2f);
 	water->Roughness = 0.0f;
+	water->DisplacementScale = 0.0f;
 
 	auto wirefence = std::make_unique<Material>();
 	wirefence->Name = "wirefence";
@@ -2502,17 +2521,23 @@ void TexWavesApp::BuildMaterials()
 void TexWavesApp::BuildRenderItems()
 {
 	auto wavesRitem = std::make_unique<RenderItem>();
-	wavesRitem->World = MathHelper::Identity4x4();
-	XMStoreFloat4x4(&wavesRitem->TexTransform, XMMatrixScaling(5.0f, 5.0f, 1.0f));
+	// Change the translation below to move the water surface in the scene.
+	XMStoreFloat4x4(
+		&wavesRitem->World,
+		XMMatrixScaling(5.0f, 1.0f, 5.0f) *
+		XMMatrixTranslation(0.0f, 1.6f, 18.0f));
+	// Increase tiling so the water texture repeats instead of stretching over the whole surface.
+	XMStoreFloat4x4(&wavesRitem->TexTransform, XMMatrixScaling(30.0f, 30.0f, 1.0f));
 	wavesRitem->ObjCBIndex = 0;
 	wavesRitem->Mat = mMaterials["water"].get();
 	wavesRitem->Geo = mGeometries["waterGeo"].get();
-	wavesRitem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	wavesRitem->PrimitiveType = D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
 	wavesRitem->IndexCount = wavesRitem->Geo->DrawArgs["grid"].IndexCount;
 	wavesRitem->StartIndexLocation = wavesRitem->Geo->DrawArgs["grid"].StartIndexLocation;
 	wavesRitem->BaseVertexLocation = wavesRitem->Geo->DrawArgs["grid"].BaseVertexLocation;
 
 	mWavesRitem = wavesRitem.get();
+	mRitemLayer[(int)RenderLayer::WaterTessellated].push_back(wavesRitem.get());
 
 	auto gridRitem = std::make_unique<RenderItem>();
 	gridRitem->World = MathHelper::Identity4x4();
