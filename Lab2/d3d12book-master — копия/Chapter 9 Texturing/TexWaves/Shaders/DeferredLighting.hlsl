@@ -15,6 +15,8 @@
 Texture2D gGBuffer0 : register(t0);
 Texture2D gGBuffer1 : register(t1);
 Texture2D gDepthMap : register(t2);
+Texture2D gGBuffer2 : register(t3);
+Texture2DArray gShadowMap : register(t4);
 
 SamplerState gsamPointWrap : register(s0);
 SamplerState gsamPointClamp : register(s1);
@@ -22,6 +24,7 @@ SamplerState gsamLinearWrap : register(s2);
 SamplerState gsamLinearClamp : register(s3);
 SamplerState gsamAnisotropicWrap : register(s4);
 SamplerState gsamAnisotropicClamp : register(s5);
+SamplerComparisonState gsamShadow : register(s6);
 
 cbuffer cbPass : register(b0)
 {
@@ -41,6 +44,8 @@ cbuffer cbPass : register(b0)
     float gDeltaTime;
     float4 gAmbientLight;
     Light gLights[MaxLights];
+    float4x4 gShadowTransform[4];
+    float4 gCascadeSplits;
 };
 
 struct VSOut
@@ -90,6 +95,53 @@ float3 ReconstructWorldPos(float2 texC, float depthNdc)
     return posW.xyz;
 }
 
+int SelectCascade(float viewDepth)
+{
+    int cascadeIndex = 0;
+    cascadeIndex += (viewDepth > gCascadeSplits.x);
+    cascadeIndex += (viewDepth > gCascadeSplits.y);
+    cascadeIndex += (viewDepth > gCascadeSplits.z);
+    return min(cascadeIndex, 3);
+}
+
+float CalcShadowFactor(float3 posW)
+{
+    float viewDepth = mul(float4(posW, 1.0f), gView).z;
+    int cascadeIndex = SelectCascade(viewDepth);
+
+    float4 shadowPosH = mul(float4(posW, 1.0f), gShadowTransform[cascadeIndex]);
+    shadowPosH.xyz /= shadowPosH.w;
+
+    if (shadowPosH.x < 0.0f || shadowPosH.x > 1.0f ||
+        shadowPosH.y < 0.0f || shadowPosH.y > 1.0f ||
+        shadowPosH.z < 0.0f || shadowPosH.z > 1.0f)
+    {
+        return 1.0f;
+    }
+
+    uint width;
+    uint height;
+    uint elements;
+    gShadowMap.GetDimensions(width, height, elements);
+
+    float2 texelSize = 1.0f / float2(width, height);
+    float depth = shadowPosH.z - 0.0015f;
+    float percentLit = 0.0f;
+
+    [unroll]
+    for (int y = -1; y <= 1; ++y)
+    {
+        [unroll]
+        for (int x = -1; x <= 1; ++x)
+        {
+            float2 uv = shadowPosH.xy + float2(x, y) * texelSize;
+            percentLit += gShadowMap.SampleCmpLevelZero(gsamShadow, float3(uv, cascadeIndex), depth);
+        }
+    }
+
+    return percentLit / 9.0f;
+}
+
 float4 PS(VSOut pin) : SV_Target
 {
     float4 g0 = gGBuffer0.Sample(gsamPointClamp, pin.TexC);
@@ -108,7 +160,7 @@ float4 PS(VSOut pin) : SV_Target
 
     const float shininess = 1.0f - roughness;
     Material mat = { diffuseAlbedo, float3(0.04f, 0.04f, 0.04f), shininess };
-    float3 shadowFactor = 1.0f;
+    float3 shadowFactor = float3(CalcShadowFactor(posW), 1.0f, 1.0f);
 
     float4 directLight = ComputeLighting(gLights, mat, posW, normalW, toEyeW, shadowFactor);
 

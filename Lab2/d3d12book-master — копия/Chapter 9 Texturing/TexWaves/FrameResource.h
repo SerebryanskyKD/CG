@@ -34,6 +34,15 @@ struct PassConstants
     // indices [NUM_DIR_LIGHTS+NUM_POINT_LIGHTS, NUM_DIR_LIGHTS+NUM_POINT_LIGHT+NUM_SPOT_LIGHTS)
     // are spot lights for a maximum of MaxLights per object.
     Light Lights[MaxLights];
+
+	DirectX::XMFLOAT4X4 ShadowTransform[4] =
+	{
+		MathHelper::Identity4x4(),
+		MathHelper::Identity4x4(),
+		MathHelper::Identity4x4(),
+		MathHelper::Identity4x4()
+	};
+	DirectX::XMFLOAT4 CascadeSplits = { 0.0f, 0.0f, 0.0f, 0.0f };
 };
 
 struct Vertex

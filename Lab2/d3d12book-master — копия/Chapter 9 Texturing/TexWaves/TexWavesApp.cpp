@@ -9,6 +9,7 @@
 #include "FrameResource.h"
 #include "Waves.h"
 #include "RenderingSystem.h"
+#include "CascadedShadowMap.h"
 #include "ObjModelLoader.h"
 #include "TgaTextureLoader.h"
 #include <algorithm>
@@ -28,6 +29,8 @@ using namespace DirectX::PackedVector;
 
 const int gNumFrameResources = 3;
 const UINT gMaxParticles = 4096;
+const int gNumCascades = 4;
+const UINT gShadowMapSize = 4096;
 
 struct RenderItem
 {
@@ -220,12 +223,14 @@ private:
 	void UpdateObjectCBs(const GameTimer& gt);
 	void UpdateMaterialCBs(const GameTimer& gt);
 	void UpdateMainPassCB(const GameTimer& gt);
+	void UpdateShadowTransforms();
 	void UpdateWaves(const GameTimer& gt);
 
 	void LoadTextures();
 	void BuildRootSignature();
 	void BuildDescriptorHeaps();
 	void BuildGBufferDescriptorHeaps();
+	void BuildCascadedShadowMap();
 	void BuildDebugRootSignature();
 	void BuildParticleUpdateRootSignature();
 	void BuildParticleDrawRootSignature();
@@ -247,10 +252,12 @@ private:
 	void BuildFrameResources();
 	void BuildMaterials();
 	void BuildRenderItems();
+	void DrawSceneToShadowMap();
 	void DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems);
 	void BuildInstancedRootSignature();
 	void UpdateScatterInstanceData();
 	void DrawScatterInstances(ID3D12GraphicsCommandList* cmdList);
+	void DrawScatterInstancesToShadowMap(ID3D12GraphicsCommandList* cmdList, D3D12_GPU_VIRTUAL_ADDRESS passCBAddress);
 	void BuildParticleResources();
 	void UpdateParticles(const GameTimer& gt, ID3D12GraphicsCommandList* cmdList);
 	void DrawParticles(ID3D12GraphicsCommandList* cmdList);
@@ -266,7 +273,7 @@ private:
 	bool ShouldTessellateMaterial(const std::string& materialName) const;
 	std::filesystem::path BuildSiblingTexturePath(const std::filesystem::path& diffusePath, const std::string& suffix) const;
 
-	std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> GetStaticSamplers();
+	std::array<const CD3DX12_STATIC_SAMPLER_DESC, 7> GetStaticSamplers();
 
 	float GetHillsHeight(float x, float z)const;
 	XMFLOAT3 GetHillsNormal(float x, float z)const;
@@ -342,6 +349,9 @@ private:
 	std::vector<std::string> mOrderedTextureNames;
 	UINT mGBufferSrvHeapOffset = 0;
 	UINT mParticleUavHeapOffset = 0;
+	UINT mShadowMapSrvHeapOffset = 0;
+	ComPtr<ID3D12DescriptorHeap> mShadowDsvHeap = nullptr;
+	std::unique_ptr<CascadedShadowMap> mCascadedShadowMap = nullptr;
 
 	std::vector<DirectX::XMFLOAT3> mGarlandColors;
 	BoundingFrustum mCameraFrustum;
@@ -441,6 +451,7 @@ bool TexWavesApp::Initialize()
 	BuildParticleDrawRootSignature();
 	BuildLightingRootSignature();
 	BuildParticleResources();
+	BuildCascadedShadowMap();
 
 	BuildDescriptorHeaps();
 	BuildGBufferDescriptorHeaps();
@@ -536,6 +547,7 @@ void TexWavesApp::Draw(const GameTimer& gt)
 	ID3D12DescriptorHeap* descriptorHeaps[] = { mSrvDescriptorHeap.Get() };
 	mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
 	UpdateParticles(gt, mCommandList.Get());
+	DrawSceneToShadowMap();
 
 	auto& gbuffer = mRenderingSystem->GetGBuffer();
 
@@ -855,8 +867,8 @@ void TexWavesApp::UpdateMainPassCB(const GameTimer& gt)
 	// ------------------------------------------------------------
 	mMainPassCB.AmbientLight = { 0.22f, 0.22f, 0.25f, 1.0f };
 
-	mMainPassCB.Lights[0].Direction = { 0.57735f, -0.57735f, 0.57735f };
-	mMainPassCB.Lights[0].Strength = { 1.1f, 1.1f, 1.0f };
+	mMainPassCB.Lights[0].Direction = { 0.12f, -0.96f, 0.24f };
+	mMainPassCB.Lights[0].Strength = { 2.2f, 2.2f, 2.0f };
 
 	mMainPassCB.Lights[1].Direction = { -0.57735f, -0.57735f, 0.57735f };
 	mMainPassCB.Lights[1].Strength = { 0.45f, 0.45f, 0.40f };
@@ -942,8 +954,123 @@ void TexWavesApp::UpdateMainPassCB(const GameTimer& gt)
 		XMStoreFloat3(&mMainPassCB.Lights[kFirstSpotLight + i].Direction, dir);
 	}
 
+	UpdateShadowTransforms();
+
 	auto currPassCB = mCurrFrameResource->PassCB.get();
 	currPassCB->CopyData(0, mMainPassCB);
+}
+
+void TexWavesApp::UpdateShadowTransforms()
+{
+	const float nearZ = 1.0f;
+	const float farZ = 1000.0f;
+	const float shadowFarZ = farZ;
+	const float lambda = 0.70f;
+	const float fovY = 0.25f * MathHelper::Pi;
+	const float tanHalfFovY = tanf(0.5f * fovY);
+	const float aspect = AspectRatio();
+
+	XMMATRIX view = XMLoadFloat4x4(&mView);
+	XMVECTOR detView = XMMatrixDeterminant(view);
+	XMMATRIX invView = XMMatrixInverse(&detView, view);
+
+	XMVECTOR lightDir = XMVector3Normalize(XMLoadFloat3(&mMainPassCB.Lights[0].Direction));
+	XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+	if (fabsf(XMVectorGetX(XMVector3Dot(lightDir, up))) > 0.95f)
+		up = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+
+	XMMATRIX texTransform(
+		0.5f, 0.0f, 0.0f, 0.0f,
+		0.0f, -0.5f, 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		0.5f, 0.5f, 0.0f, 1.0f);
+
+	float prevSplit = nearZ;
+	PassConstants shadowPasses[gNumCascades];
+
+	for (int cascadeIndex = 0; cascadeIndex < gNumCascades; ++cascadeIndex)
+	{
+		const float p = (float)(cascadeIndex + 1) / (float)gNumCascades;
+		const float logSplit = nearZ * powf(shadowFarZ / nearZ, p);
+		const float uniformSplit = nearZ + (shadowFarZ - nearZ) * p;
+		const float split = lambda * logSplit + (1.0f - lambda) * uniformSplit;
+
+		(&mMainPassCB.CascadeSplits.x)[cascadeIndex] = split;
+
+		std::array<XMVECTOR, 8> corners;
+		int cornerIndex = 0;
+		for (float z : { prevSplit, split })
+		{
+			const float y = tanHalfFovY * z;
+			const float x = y * aspect;
+			const XMVECTOR viewCorners[4] =
+			{
+				XMVectorSet(-x, -y, z, 1.0f),
+				XMVectorSet(-x,  y, z, 1.0f),
+				XMVectorSet( x,  y, z, 1.0f),
+				XMVectorSet( x, -y, z, 1.0f)
+			};
+
+			for (int i = 0; i < 4; ++i)
+				corners[cornerIndex++] = XMVector3TransformCoord(viewCorners[i], invView);
+		}
+
+		XMVECTOR center = XMVectorZero();
+		for (const XMVECTOR& corner : corners)
+			center += corner;
+		center /= 8.0f;
+
+		float radius = 0.0f;
+		for (const XMVECTOR& corner : corners)
+		{
+			const float d = XMVectorGetX(XMVector3Length(corner - center));
+			radius = (std::max)(radius, d);
+		}
+		radius = ceilf(radius * 16.0f) / 16.0f;
+		radius *= 3.0f;
+
+		XMVECTOR lightPos = center - lightDir * (2.0f * radius);
+		XMMATRIX lightView = XMMatrixLookAtLH(lightPos, center, up);
+
+		XMFLOAT3 centerLS;
+		XMStoreFloat3(&centerLS, XMVector3TransformCoord(center, lightView));
+
+		const float l = centerLS.x - radius;
+		const float b = centerLS.y - radius;
+		const float n = centerLS.z - 3.0f * radius;
+		const float r = centerLS.x + radius;
+		const float t = centerLS.y + radius;
+		const float f = centerLS.z + 3.0f * radius;
+
+		XMMATRIX lightProj = XMMatrixOrthographicOffCenterLH(l, r, b, t, n, f);
+		XMMATRIX lightViewProj = lightView * lightProj;
+		XMMATRIX shadowTransform = lightViewProj * texTransform;
+
+		XMStoreFloat4x4(&mMainPassCB.ShadowTransform[cascadeIndex], XMMatrixTranspose(shadowTransform));
+
+		PassConstants shadowPass = mMainPassCB;
+		XMMATRIX invLightView = XMMatrixInverse(&XMMatrixDeterminant(lightView), lightView);
+		XMMATRIX invLightProj = XMMatrixInverse(&XMMatrixDeterminant(lightProj), lightProj);
+		XMMATRIX invLightViewProj = XMMatrixInverse(&XMMatrixDeterminant(lightViewProj), lightViewProj);
+
+		XMStoreFloat4x4(&shadowPass.View, XMMatrixTranspose(lightView));
+		XMStoreFloat4x4(&shadowPass.InvView, XMMatrixTranspose(invLightView));
+		XMStoreFloat4x4(&shadowPass.Proj, XMMatrixTranspose(lightProj));
+		XMStoreFloat4x4(&shadowPass.InvProj, XMMatrixTranspose(invLightProj));
+		XMStoreFloat4x4(&shadowPass.ViewProj, XMMatrixTranspose(lightViewProj));
+		XMStoreFloat4x4(&shadowPass.InvViewProj, XMMatrixTranspose(invLightViewProj));
+		shadowPass.RenderTargetSize = XMFLOAT2((float)gShadowMapSize, (float)gShadowMapSize);
+		shadowPass.InvRenderTargetSize = XMFLOAT2(1.0f / gShadowMapSize, 1.0f / gShadowMapSize);
+		shadowPass.NearZ = n;
+		shadowPass.FarZ = f;
+		shadowPasses[cascadeIndex] = shadowPass;
+
+		prevSplit = split;
+	}
+
+	auto currPassCB = mCurrFrameResource->PassCB.get();
+	for (int cascadeIndex = 0; cascadeIndex < gNumCascades; ++cascadeIndex)
+		currPassCB->CopyData(cascadeIndex + 1, shadowPasses[cascadeIndex]);
 }
 
 void TexWavesApp::UpdateWaves(const GameTimer& gt)
@@ -1452,9 +1579,10 @@ void TexWavesApp::BuildDescriptorHeaps()
 	mTextureSrvHeapIndices.clear();
 	mParticleUavHeapOffset = (UINT)mOrderedTextureNames.size();
 	mGBufferSrvHeapOffset = mParticleUavHeapOffset + 2;
+	mShadowMapSrvHeapOffset = mGBufferSrvHeapOffset + 4;
 
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-	srvHeapDesc.NumDescriptors = mGBufferSrvHeapOffset + 4; // textures + particle UAVs + RT0, RT1, Depth, RT2
+	srvHeapDesc.NumDescriptors = mShadowMapSrvHeapOffset + 1; // textures + particle UAVs + GBuffer SRVs + cascaded shadow map
 	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
@@ -1531,6 +1659,37 @@ void TexWavesApp::BuildGBufferDescriptorHeaps()
 		mGBufferSrvHeapOffset,
 		mGBufferDsvHeap.Get(),
 		0);
+
+	D3D12_DESCRIPTOR_HEAP_DESC shadowDsvHeapDesc = {};
+	shadowDsvHeapDesc.NumDescriptors = gNumCascades;
+	shadowDsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+	shadowDsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+	shadowDsvHeapDesc.NodeMask = 0;
+	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&shadowDsvHeapDesc, IID_PPV_ARGS(&mShadowDsvHeap)));
+
+	CD3DX12_CPU_DESCRIPTOR_HANDLE shadowSrvCpu(
+		mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+		mShadowMapSrvHeapOffset,
+		mCbvSrvDescriptorSize);
+	CD3DX12_GPU_DESCRIPTOR_HANDLE shadowSrvGpu(
+		mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+		mShadowMapSrvHeapOffset,
+		mCbvSrvDescriptorSize);
+
+	mCascadedShadowMap->BuildDescriptors(
+		shadowSrvCpu,
+		shadowSrvGpu,
+		CD3DX12_CPU_DESCRIPTOR_HANDLE(mShadowDsvHeap->GetCPUDescriptorHandleForHeapStart()),
+		mDsvDescriptorSize);
+}
+
+void TexWavesApp::BuildCascadedShadowMap()
+{
+	mCascadedShadowMap = std::make_unique<CascadedShadowMap>(
+		md3dDevice.Get(),
+		gShadowMapSize,
+		gShadowMapSize,
+		gNumCascades);
 }
 
 void TexWavesApp::BuildShadersAndInputLayout()
@@ -1544,6 +1703,11 @@ void TexWavesApp::BuildShadersAndInputLayout()
 	mShaders["tessHS"] = d3dUtil::CompileShader(L"Shaders\\TessellationGBuffer.hlsl", nullptr, "HS", "hs_5_0");
 	mShaders["tessDS"] = d3dUtil::CompileShader(L"Shaders\\TessellationGBuffer.hlsl", nullptr, "DS", "ds_5_0");
 	mShaders["tessPS"] = d3dUtil::CompileShader(L"Shaders\\TessellationGBuffer.hlsl", nullptr, "PS", "ps_5_0");
+	mShaders["shadowVS"] = d3dUtil::CompileShader(L"Shaders\\ShadowDepth.hlsl", nullptr, "VS", "vs_5_0");
+	mShaders["shadowTessVS"] = d3dUtil::CompileShader(L"Shaders\\ShadowTessDepth.hlsl", nullptr, "VS", "vs_5_0");
+	mShaders["shadowTessHS"] = d3dUtil::CompileShader(L"Shaders\\ShadowTessDepth.hlsl", nullptr, "HS", "hs_5_0");
+	mShaders["shadowTessDS"] = d3dUtil::CompileShader(L"Shaders\\ShadowTessDepth.hlsl", nullptr, "DS", "ds_5_0");
+	mShaders["shadowInstancedVS"] = d3dUtil::CompileShader(L"Shaders\\ShadowInstancedDepth.hlsl", nullptr, "VS", "vs_5_0");
 
 	mShaders["debugVS"] = d3dUtil::CompileShader(L"Shaders\\DebugGBuffer.hlsl", nullptr, "VS", "vs_5_0");
 	mShaders["debugPS"] = d3dUtil::CompileShader(L"Shaders\\DebugGBuffer.hlsl", nullptr, "PS", "ps_5_0");
@@ -2358,6 +2522,59 @@ void TexWavesApp::BuildPSOs()
 		&waterTessWirePsoDesc,
 		IID_PPV_ARGS(&mPSOs["waterTessWire"])));
 
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC shadowPsoDesc = gbufferPsoDesc;
+	shadowPsoDesc.VS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["shadowVS"]->GetBufferPointer()),
+		mShaders["shadowVS"]->GetBufferSize()
+	};
+	shadowPsoDesc.PS = { nullptr, 0 };
+	shadowPsoDesc.NumRenderTargets = 0;
+	for (int i = 0; i < 8; ++i)
+		shadowPsoDesc.RTVFormats[i] = DXGI_FORMAT_UNKNOWN;
+	shadowPsoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+	shadowPsoDesc.RasterizerState.DepthBias = 100000;
+	shadowPsoDesc.RasterizerState.DepthBiasClamp = 0.0f;
+	shadowPsoDesc.RasterizerState.SlopeScaledDepthBias = 1.0f;
+
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+		&shadowPsoDesc,
+		IID_PPV_ARGS(&mPSOs["shadowOpaque"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC shadowTessPsoDesc = shadowPsoDesc;
+	shadowTessPsoDesc.VS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["shadowTessVS"]->GetBufferPointer()),
+		mShaders["shadowTessVS"]->GetBufferSize()
+	};
+	shadowTessPsoDesc.HS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["shadowTessHS"]->GetBufferPointer()),
+		mShaders["shadowTessHS"]->GetBufferSize()
+	};
+	shadowTessPsoDesc.DS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["shadowTessDS"]->GetBufferPointer()),
+		mShaders["shadowTessDS"]->GetBufferSize()
+	};
+	shadowTessPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
+
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+		&shadowTessPsoDesc,
+		IID_PPV_ARGS(&mPSOs["shadowTess"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC shadowInstancedPsoDesc = shadowPsoDesc;
+	shadowInstancedPsoDesc.pRootSignature = mInstancedRootSignature.Get();
+	shadowInstancedPsoDesc.VS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["shadowInstancedVS"]->GetBufferPointer()),
+		mShaders["shadowInstancedVS"]->GetBufferSize()
+	};
+
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+		&shadowInstancedPsoDesc,
+		IID_PPV_ARGS(&mPSOs["shadowInstanced"])));
+
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC debugPsoDesc = {};
 	ZeroMemory(&debugPsoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
 	debugPsoDesc.InputLayout = { nullptr, 0 };
@@ -2462,7 +2679,7 @@ void TexWavesApp::BuildFrameResources()
 	for (int i = 0; i < gNumFrameResources; ++i)
 	{
 		mFrameResources.push_back(std::make_unique<FrameResource>(md3dDevice.Get(),
-			1, (UINT)mAllRitems.size(), (UINT)mMaterials.size(), mWaves->VertexCount(), (UINT)(std::max<size_t>(1, mScatterInstances.size()))));
+			1 + gNumCascades, (UINT)mAllRitems.size(), (UINT)mMaterials.size(), mWaves->VertexCount(), (UINT)(std::max<size_t>(1, mScatterInstances.size()))));
 	}
 }
 
@@ -2512,10 +2729,21 @@ void TexWavesApp::BuildMaterials()
 	lightBulb->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
 	lightBulb->Roughness = 0.02f;
 
+	auto shadowPillar = std::make_unique<Material>();
+	shadowPillar->Name = "shadowPillar";
+	shadowPillar->MatCBIndex = 4;
+	shadowPillar->DiffuseSrvHeapIndex = defaultDisplacementSrv;
+	shadowPillar->NormalSrvHeapIndex = defaultNormalSrv;
+	shadowPillar->DisplacementSrvHeapIndex = defaultDisplacementSrv;
+	shadowPillar->DiffuseAlbedo = XMFLOAT4(0.72f, 0.70f, 0.64f, 1.0f);
+	shadowPillar->FresnelR0 = XMFLOAT3(0.03f, 0.03f, 0.03f);
+	shadowPillar->Roughness = 0.55f;
+
 	mMaterials["grass"] = std::move(grass);
 	mMaterials["water"] = std::move(water);
 	mMaterials["wirefence"] = std::move(wirefence);
 	mMaterials["lightBulb"] = std::move(lightBulb);
+	mMaterials["shadowPillar"] = std::move(shadowPillar);
 }
 
 void TexWavesApp::BuildRenderItems()
@@ -2525,7 +2753,7 @@ void TexWavesApp::BuildRenderItems()
 	XMStoreFloat4x4(
 		&wavesRitem->World,
 		XMMatrixScaling(5.0f, 1.0f, 5.0f) *
-		XMMatrixTranslation(0.0f, 1.6f, 18.0f));
+		XMMatrixTranslation(0.0f, -8.0f, 18.0f));
 	// Increase tiling so the water texture repeats instead of stretching over the whole surface.
 	XMStoreFloat4x4(&wavesRitem->TexTransform, XMMatrixScaling(30.0f, 30.0f, 1.0f));
 	wavesRitem->ObjCBIndex = 0;
@@ -2560,9 +2788,71 @@ void TexWavesApp::BuildRenderItems()
 	boxRitem->StartIndexLocation = boxRitem->Geo->DrawArgs["box"].StartIndexLocation;
 	boxRitem->BaseVertexLocation = boxRitem->Geo->DrawArgs["box"].BaseVertexLocation;
 
+	auto shadowPillarRitem = std::make_unique<RenderItem>();
+	XMStoreFloat4x4(
+		&shadowPillarRitem->World,
+		XMMatrixScaling(0.28f, 50.60f, 0.28f) *
+		XMMatrixRotationZ(0.45f) *
+		XMMatrixTranslation(35.0f, 13.8f, -20.0f));
+	XMStoreFloat4x4(&shadowPillarRitem->TexTransform, XMMatrixScaling(1.0f, 3.0f, 1.0f));
+	shadowPillarRitem->ObjCBIndex = 3;
+	shadowPillarRitem->Mat = mMaterials["shadowPillar"].get();
+	shadowPillarRitem->Geo = mGeometries["boxGeo"].get();
+	shadowPillarRitem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	shadowPillarRitem->IndexCount = shadowPillarRitem->Geo->DrawArgs["box"].IndexCount;
+	shadowPillarRitem->StartIndexLocation = shadowPillarRitem->Geo->DrawArgs["box"].StartIndexLocation;
+	shadowPillarRitem->BaseVertexLocation = shadowPillarRitem->Geo->DrawArgs["box"].BaseVertexLocation;
+
+	mRitemLayer[(int)RenderLayer::Opaque].push_back(shadowPillarRitem.get());
+
 	mAllRitems.push_back(std::move(wavesRitem));
 	mAllRitems.push_back(std::move(gridRitem));
 	mAllRitems.push_back(std::move(boxRitem));
+	mAllRitems.push_back(std::move(shadowPillarRitem));
+}
+
+void TexWavesApp::DrawSceneToShadowMap()
+{
+	mCommandList->RSSetViewports(1, &mCascadedShadowMap->Viewport());
+	mCommandList->RSSetScissorRects(1, &mCascadedShadowMap->ScissorRect());
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mCascadedShadowMap->Resource(),
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		D3D12_RESOURCE_STATE_DEPTH_WRITE));
+
+	auto passCB = mCurrFrameResource->PassCB->Resource();
+	const UINT passCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
+
+	for (int cascadeIndex = 0; cascadeIndex < gNumCascades; ++cascadeIndex)
+	{
+		D3D12_CPU_DESCRIPTOR_HANDLE shadowDsv = mCascadedShadowMap->Dsv(cascadeIndex);
+		mCommandList->ClearDepthStencilView(shadowDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+		mCommandList->OMSetRenderTargets(0, nullptr, false, &shadowDsv);
+
+		const D3D12_GPU_VIRTUAL_ADDRESS passCBAddress =
+			passCB->GetGPUVirtualAddress() + (UINT64)(cascadeIndex + 1) * passCBByteSize;
+
+		mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+		mCommandList->SetGraphicsRootConstantBufferView(4, passCBAddress);
+
+		mCommandList->SetPipelineState(mPSOs["shadowOpaque"].Get());
+		DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Opaque]);
+
+		mCommandList->SetPipelineState(mPSOs["shadowTess"].Get());
+		DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Tessellated]);
+		DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::WaterTessellated]);
+
+		DrawScatterInstancesToShadowMap(mCommandList.Get(), passCBAddress);
+	}
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mCascadedShadowMap->Resource(),
+		D3D12_RESOURCE_STATE_DEPTH_WRITE,
+		D3D12_RESOURCE_STATE_GENERIC_READ));
+
+	mCommandList->RSSetViewports(1, &mScreenViewport);
+	mCommandList->RSSetScissorRects(1, &mScissorRect);
 }
 
 void TexWavesApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems)
@@ -2603,7 +2893,7 @@ void TexWavesApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std:
 	}
 }
 
-std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> TexWavesApp::GetStaticSamplers()
+std::array<const CD3DX12_STATIC_SAMPLER_DESC, 7> TexWavesApp::GetStaticSamplers()
 {
 	const CD3DX12_STATIC_SAMPLER_DESC pointWrap(
 		0, // shaderRegister
@@ -2651,10 +2941,22 @@ std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> TexWavesApp::GetStaticSamplers(
 		0.0f,                              // mipLODBias
 		8);                                // maxAnisotropy
 
+	const CD3DX12_STATIC_SAMPLER_DESC shadow(
+		6, // shaderRegister
+		D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
+		D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+		D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+		D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+		0.0f,
+		16,
+		D3D12_COMPARISON_FUNC_LESS_EQUAL,
+		D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE);
+
 	return {
 		pointWrap, pointClamp,
 		linearWrap, linearClamp,
-		anisotropicWrap, anisotropicClamp };
+		anisotropicWrap, anisotropicClamp,
+		shadow };
 }
 
 float TexWavesApp::GetHillsHeight(float x, float z)const
@@ -2679,7 +2981,7 @@ XMFLOAT3 TexWavesApp::GetHillsNormal(float x, float z)const
 void TexWavesApp::BuildLightingRootSignature()
 {
 	CD3DX12_DESCRIPTOR_RANGE texTable;
-	texTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);
+	texTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0);
 
 	CD3DX12_ROOT_PARAMETER slotRootParameter[2];
 	slotRootParameter[0].InitAsDescriptorTable(1, &texTable, D3D12_SHADER_VISIBILITY_PIXEL);
@@ -3110,6 +3412,30 @@ void TexWavesApp::DrawScatterInstances(ID3D12GraphicsCommandList* cmdList)
 	cmdList->SetGraphicsRootShaderResourceView(0, mCurrFrameResource->ScatterInstanceBuffer->Resource()->GetGPUVirtualAddress());
 	cmdList->SetGraphicsRootConstantBufferView(1, passCB->GetGPUVirtualAddress());
 	cmdList->SetGraphicsRootConstantBufferView(2, matCBAddress);
+	cmdList->IASetVertexBuffers(0, 1, &vbView);
+	cmdList->IASetIndexBuffer(&ibView);
+	cmdList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	cmdList->DrawIndexedInstanced(
+		geo->DrawArgs["scatterBox"].IndexCount,
+		mScatterVisibleCount,
+		geo->DrawArgs["scatterBox"].StartIndexLocation,
+		geo->DrawArgs["scatterBox"].BaseVertexLocation,
+		0);
+}
+
+void TexWavesApp::DrawScatterInstancesToShadowMap(ID3D12GraphicsCommandList* cmdList, D3D12_GPU_VIRTUAL_ADDRESS passCBAddress)
+{
+	if (mScatterVisibleCount == 0)
+		return;
+
+	auto geo = mGeometries["scatterBoxGeo"].get();
+	D3D12_VERTEX_BUFFER_VIEW vbView = geo->VertexBufferView();
+	D3D12_INDEX_BUFFER_VIEW ibView = geo->IndexBufferView();
+
+	cmdList->SetPipelineState(mPSOs["shadowInstanced"].Get());
+	cmdList->SetGraphicsRootSignature(mInstancedRootSignature.Get());
+	cmdList->SetGraphicsRootShaderResourceView(0, mCurrFrameResource->ScatterInstanceBuffer->Resource()->GetGPUVirtualAddress());
+	cmdList->SetGraphicsRootConstantBufferView(1, passCBAddress);
 	cmdList->IASetVertexBuffers(0, 1, &vbView);
 	cmdList->IASetIndexBuffer(&ibView);
 	cmdList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
