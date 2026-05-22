@@ -55,6 +55,8 @@ struct RenderItem
 	UINT IndexCount = 0;
 	UINT StartIndexLocation = 0;
 	int BaseVertexLocation = 0;
+
+	bool CastsShadow = true;
 };
 
 struct ScatterInstance
@@ -253,7 +255,7 @@ private:
 	void BuildMaterials();
 	void BuildRenderItems();
 	void DrawSceneToShadowMap();
-	void DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems);
+	void DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems, bool shadowPass = false);
 	void BuildInstancedRootSignature();
 	void UpdateScatterInstanceData();
 	void DrawScatterInstances(ID3D12GraphicsCommandList* cmdList);
@@ -1027,13 +1029,17 @@ void TexWavesApp::UpdateShadowTransforms()
 			radius = (std::max)(radius, d);
 		}
 		radius = ceilf(radius * 16.0f) / 16.0f;
-		radius *= 3.0f;
+		radius *= 2.0f;
 
 		XMVECTOR lightPos = center - lightDir * (2.0f * radius);
 		XMMATRIX lightView = XMMatrixLookAtLH(lightPos, center, up);
 
 		XMFLOAT3 centerLS;
 		XMStoreFloat3(&centerLS, XMVector3TransformCoord(center, lightView));
+
+		const float texelsPerUnit = (float)gShadowMapSize / (2.0f * radius);
+		centerLS.x = floorf(centerLS.x * texelsPerUnit) / texelsPerUnit;
+		centerLS.y = floorf(centerLS.y * texelsPerUnit) / texelsPerUnit;
 
 		const float l = centerLS.x - radius;
 		const float b = centerLS.y - radius;
@@ -2391,6 +2397,7 @@ void TexWavesApp::BuildSponzaRenderItems()
 		ri->IndexCount = bulbGeo->DrawArgs["sphere"].IndexCount;
 		ri->StartIndexLocation = bulbGeo->DrawArgs["sphere"].StartIndexLocation;
 		ri->BaseVertexLocation = bulbGeo->DrawArgs["sphere"].BaseVertexLocation;
+		ri->CastsShadow = false;
 
 		mRitemLayer[(int)RenderLayer::Opaque].push_back(ri.get());
 		mAllRitems.push_back(std::move(ri));
@@ -2763,6 +2770,7 @@ void TexWavesApp::BuildRenderItems()
 	wavesRitem->IndexCount = wavesRitem->Geo->DrawArgs["grid"].IndexCount;
 	wavesRitem->StartIndexLocation = wavesRitem->Geo->DrawArgs["grid"].StartIndexLocation;
 	wavesRitem->BaseVertexLocation = wavesRitem->Geo->DrawArgs["grid"].BaseVertexLocation;
+	wavesRitem->CastsShadow = false;
 
 	mWavesRitem = wavesRitem.get();
 	mRitemLayer[(int)RenderLayer::WaterTessellated].push_back(wavesRitem.get());
@@ -2837,11 +2845,11 @@ void TexWavesApp::DrawSceneToShadowMap()
 		mCommandList->SetGraphicsRootConstantBufferView(4, passCBAddress);
 
 		mCommandList->SetPipelineState(mPSOs["shadowOpaque"].Get());
-		DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Opaque]);
+		DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Opaque], true);
 
 		mCommandList->SetPipelineState(mPSOs["shadowTess"].Get());
-		DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Tessellated]);
-		DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::WaterTessellated]);
+		DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Tessellated], true);
+		DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::WaterTessellated], true);
 
 		DrawScatterInstancesToShadowMap(mCommandList.Get(), passCBAddress);
 	}
@@ -2855,7 +2863,7 @@ void TexWavesApp::DrawSceneToShadowMap()
 	mCommandList->RSSetScissorRects(1, &mScissorRect);
 }
 
-void TexWavesApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems)
+void TexWavesApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems, bool shadowPass)
 {
 	UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
 	UINT matCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(MaterialConstants));
@@ -2866,6 +2874,8 @@ void TexWavesApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std:
 	for (size_t i = 0; i < ritems.size(); ++i)
 	{
 		auto ri = ritems[i];
+		if (shadowPass && !ri->CastsShadow)
+			continue;
 
 		cmdList->IASetVertexBuffers(0, 1, &ri->Geo->VertexBufferView());
 		cmdList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
