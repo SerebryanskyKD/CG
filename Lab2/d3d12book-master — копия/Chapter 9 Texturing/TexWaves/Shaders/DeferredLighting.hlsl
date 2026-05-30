@@ -17,6 +17,8 @@ Texture2D gGBuffer1 : register(t1);
 Texture2D gDepthMap : register(t2);
 Texture2D gGBuffer2 : register(t3);
 Texture2DArray gShadowMap : register(t4);
+Texture2DArray gTexturedShadowMap : register(t5);
+Texture2D gTexturedShadowPattern : register(t6);
 
 SamplerState gsamPointWrap : register(s0);
 SamplerState gsamPointClamp : register(s1);
@@ -142,6 +144,30 @@ float CalcShadowFactor(float3 posW)
     return percentLit / 9.0f;
 }
 
+float CalcTexturedShadowAmount(float3 posW)
+{
+    float viewDepth = mul(float4(posW, 1.0f), gView).z;
+    int cascadeIndex = SelectCascade(viewDepth);
+
+    float4 shadowPosH = mul(float4(posW, 1.0f), gShadowTransform[cascadeIndex]);
+    shadowPosH.xyz /= shadowPosH.w;
+
+    if (shadowPosH.x < 0.0f || shadowPosH.x > 1.0f ||
+        shadowPosH.y < 0.0f || shadowPosH.y > 1.0f ||
+        shadowPosH.z < 0.0f || shadowPosH.z > 1.0f)
+    {
+        return 0.0f;
+    }
+
+    float depth = shadowPosH.z - 0.0015f;
+    float percentLit = gTexturedShadowMap.SampleCmpLevelZero(
+        gsamShadow,
+        float3(shadowPosH.xy, cascadeIndex),
+        depth);
+
+    return 1.0f - percentLit;
+}
+
 float4 PS(VSOut pin) : SV_Target
 {
     float4 g0 = gGBuffer0.Sample(gsamPointClamp, pin.TexC);
@@ -165,6 +191,9 @@ float4 PS(VSOut pin) : SV_Target
     float4 directLight = ComputeLighting(gLights, mat, posW, normalW, toEyeW, shadowFactor);
 
     float4 litColor = ambient + directLight;
+    float texturedShadowAmount = CalcTexturedShadowAmount(posW);
+    float3 texturedShadow = gTexturedShadowPattern.Sample(gsamLinearWrap, posW.xz * 1.0f).rgb;
+    litColor.rgb = lerp(litColor.rgb, texturedShadow * 0.82f, texturedShadowAmount * 0.92f);
     litColor.a = 1.0f;
 
     return litColor;

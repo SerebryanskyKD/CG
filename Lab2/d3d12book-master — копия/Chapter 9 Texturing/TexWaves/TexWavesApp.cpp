@@ -369,9 +369,12 @@ private:
 	UINT mGBufferSrvHeapOffset = 0;
 	UINT mParticleUavHeapOffset = 0;
 	UINT mShadowMapSrvHeapOffset = 0;
+	UINT mTexturedShadowMapSrvHeapOffset = 0;
+	UINT mTexturedShadowPatternSrvHeapOffset = 0;
 	UINT mPostProcessSrvHeapOffset = 0;
 	ComPtr<ID3D12DescriptorHeap> mShadowDsvHeap = nullptr;
 	std::unique_ptr<CascadedShadowMap> mCascadedShadowMap = nullptr;
+	std::unique_ptr<CascadedShadowMap> mTexturedShadowMap = nullptr;
 	std::array<ComPtr<ID3D12Resource>, 2> mPostProcessMaps;
 	std::array<CD3DX12_CPU_DESCRIPTOR_HANDLE, 2> mPostProcessRtvs;
 	std::array<CD3DX12_CPU_DESCRIPTOR_HANDLE, 2> mPostProcessSrvsCpu;
@@ -1403,6 +1406,14 @@ void TexWavesApp::LoadTextures()
 		defaultDisplacementTex->Filename.c_str(), defaultDisplacementTex->Resource, defaultDisplacementTex->UploadHeap));
 	mOrderedTextureNames.push_back(defaultDisplacementTex->Name);
 	mTextures[defaultDisplacementTex->Name] = std::move(defaultDisplacementTex);
+
+	auto texturedShadowPattern = std::make_unique<Texture>();
+	texturedShadowPattern->Name = "texturedShadowPattern";
+	texturedShadowPattern->Filename = L"Assets/textured_shadow_pattern.tga";
+	ThrowIfFailed(CreateTGATextureFromFile12(md3dDevice.Get(), mCommandList.Get(),
+		texturedShadowPattern->Filename, texturedShadowPattern->Resource, texturedShadowPattern->UploadHeap));
+	mOrderedTextureNames.push_back(texturedShadowPattern->Name);
+	mTextures[texturedShadowPattern->Name] = std::move(texturedShadowPattern);
 }
 
 void TexWavesApp::BuildRootSignature()
@@ -1743,10 +1754,12 @@ void TexWavesApp::BuildDescriptorHeaps()
 	mParticleUavHeapOffset = (UINT)mOrderedTextureNames.size();
 	mGBufferSrvHeapOffset = mParticleUavHeapOffset + 2;
 	mShadowMapSrvHeapOffset = mGBufferSrvHeapOffset + 4;
-	mPostProcessSrvHeapOffset = mShadowMapSrvHeapOffset + 1;
+	mTexturedShadowMapSrvHeapOffset = mShadowMapSrvHeapOffset + 1;
+	mTexturedShadowPatternSrvHeapOffset = mTexturedShadowMapSrvHeapOffset + 1;
+	mPostProcessSrvHeapOffset = mTexturedShadowPatternSrvHeapOffset + 1;
 
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-	srvHeapDesc.NumDescriptors = mPostProcessSrvHeapOffset + 2; // textures + particle UAVs + GBuffer SRVs + shadow map + post maps
+	srvHeapDesc.NumDescriptors = mPostProcessSrvHeapOffset + 2;
 	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
@@ -1825,7 +1838,7 @@ void TexWavesApp::BuildGBufferDescriptorHeaps()
 		0);
 
 	D3D12_DESCRIPTOR_HEAP_DESC shadowDsvHeapDesc = {};
-	shadowDsvHeapDesc.NumDescriptors = gNumCascades;
+	shadowDsvHeapDesc.NumDescriptors = 2 * gNumCascades;
 	shadowDsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
 	shadowDsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 	shadowDsvHeapDesc.NodeMask = 0;
@@ -1845,6 +1858,36 @@ void TexWavesApp::BuildGBufferDescriptorHeaps()
 		shadowSrvGpu,
 		CD3DX12_CPU_DESCRIPTOR_HANDLE(mShadowDsvHeap->GetCPUDescriptorHandleForHeapStart()),
 		mDsvDescriptorSize);
+
+	CD3DX12_CPU_DESCRIPTOR_HANDLE texturedShadowSrvCpu(
+		mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+		mTexturedShadowMapSrvHeapOffset,
+		mCbvSrvDescriptorSize);
+	CD3DX12_GPU_DESCRIPTOR_HANDLE texturedShadowSrvGpu(
+		mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+		mTexturedShadowMapSrvHeapOffset,
+		mCbvSrvDescriptorSize);
+
+	mTexturedShadowMap->BuildDescriptors(
+		texturedShadowSrvCpu,
+		texturedShadowSrvGpu,
+		CD3DX12_CPU_DESCRIPTOR_HANDLE(
+			mShadowDsvHeap->GetCPUDescriptorHandleForHeapStart(),
+			gNumCascades,
+			mDsvDescriptorSize),
+		mDsvDescriptorSize);
+
+	md3dDevice->CopyDescriptorsSimple(
+		1,
+		CD3DX12_CPU_DESCRIPTOR_HANDLE(
+			mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+			mTexturedShadowPatternSrvHeapOffset,
+			mCbvSrvDescriptorSize),
+		CD3DX12_CPU_DESCRIPTOR_HANDLE(
+			mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+			mTextureSrvHeapIndices["texturedShadowPattern"],
+			mCbvSrvDescriptorSize),
+		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 }
 
 void TexWavesApp::BuildPostProcessResources()
@@ -1936,6 +1979,11 @@ void TexWavesApp::BuildPostProcessDescriptors()
 void TexWavesApp::BuildCascadedShadowMap()
 {
 	mCascadedShadowMap = std::make_unique<CascadedShadowMap>(
+		md3dDevice.Get(),
+		gShadowMapSize,
+		gShadowMapSize,
+		gNumCascades);
+	mTexturedShadowMap = std::make_unique<CascadedShadowMap>(
 		md3dDevice.Get(),
 		gShadowMapSize,
 		gShadowMapSize,
@@ -3164,6 +3212,28 @@ void TexWavesApp::DrawSceneToShadowMap()
 		D3D12_RESOURCE_STATE_DEPTH_WRITE,
 		D3D12_RESOURCE_STATE_GENERIC_READ));
 
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mTexturedShadowMap->Resource(),
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		D3D12_RESOURCE_STATE_DEPTH_WRITE));
+
+	for (int cascadeIndex = 0; cascadeIndex < gNumCascades; ++cascadeIndex)
+	{
+		D3D12_CPU_DESCRIPTOR_HANDLE shadowDsv = mTexturedShadowMap->Dsv(cascadeIndex);
+		mCommandList->ClearDepthStencilView(shadowDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+		mCommandList->OMSetRenderTargets(0, nullptr, false, &shadowDsv);
+
+		const D3D12_GPU_VIRTUAL_ADDRESS passCBAddress =
+			passCB->GetGPUVirtualAddress() + (UINT64)(cascadeIndex + 1) * passCBByteSize;
+
+		DrawScatterInstancesToShadowMap(mCommandList.Get(), passCBAddress);
+	}
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mTexturedShadowMap->Resource(),
+		D3D12_RESOURCE_STATE_DEPTH_WRITE,
+		D3D12_RESOURCE_STATE_GENERIC_READ));
+
 	mCommandList->RSSetViewports(1, &mScreenViewport);
 	mCommandList->RSSetScissorRects(1, &mScissorRect);
 }
@@ -3318,7 +3388,7 @@ XMFLOAT3 TexWavesApp::GetHillsNormal(float x, float z)const
 void TexWavesApp::BuildLightingRootSignature()
 {
 	CD3DX12_DESCRIPTOR_RANGE texTable;
-	texTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0);
+	texTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 7, 0);
 
 	CD3DX12_ROOT_PARAMETER slotRootParameter[2];
 	slotRootParameter[0].InitAsDescriptorTable(1, &texTable, D3D12_SHADER_VISIBILITY_PIXEL);
