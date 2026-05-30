@@ -88,7 +88,7 @@ PatchTess ConstantHS(InputPatch<VertexOut, 3> patch, uint patchID : SV_Primitive
 
     const float d0 = 15.0f;
     const float d1 = 90.0f;
-    float tess = lerp(16.0f, 1.0f, saturate((d - d0) / (d1 - d0)));
+    float tess = lerp(4.0f, 1.0f, saturate((d - d0) / (d1 - d0)));
 
     pt.EdgeTess[0] = tess;
     pt.EdgeTess[1] = tess;
@@ -110,7 +110,7 @@ struct HullOut
 [outputtopology("triangle_cw")]
 [outputcontrolpoints(3)]
 [patchconstantfunc("ConstantHS")]
-[maxtessfactor(16.0f)]
+[maxtessfactor(4.0f)]
 HullOut HS(InputPatch<VertexOut, 3> patch, uint i : SV_OutputControlPointID, uint patchId : SV_PrimitiveID)
 {
     HullOut hout;

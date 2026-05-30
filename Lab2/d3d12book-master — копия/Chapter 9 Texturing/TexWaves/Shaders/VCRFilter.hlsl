@@ -56,7 +56,9 @@ VSOut VS(uint vid : SV_VertexID)
 
 float Rand(float2 p)
 {
-    return frac(sin(dot(p, float2(12.9898f, 78.233f))) * 43758.5453f);
+    float3 p3 = frac(float3(p.xyx) * 0.1031f);
+    p3 += dot(p3, p3.yzx + 33.33f);
+    return frac((p3.x + p3.y) * p3.z);
 }
 
 float4 PS(VSOut pin) : SV_Target

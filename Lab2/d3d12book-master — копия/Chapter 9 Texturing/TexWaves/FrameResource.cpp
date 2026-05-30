@@ -13,6 +13,7 @@ FrameResource::FrameResource(ID3D12Device* device, UINT passCount, UINT objectCo
 
     WavesVB = std::make_unique<UploadBuffer<Vertex>>(device, waveVertCount, false);
     ScatterInstanceBuffer = std::make_unique<UploadBuffer<ScatterInstanceData>>(device, scatterInstanceCount, false);
+    ShadowScatterInstanceBuffer = std::make_unique<UploadBuffer<ScatterInstanceData>>(device, scatterInstanceCount, false);
 }
 
 FrameResource::~FrameResource()

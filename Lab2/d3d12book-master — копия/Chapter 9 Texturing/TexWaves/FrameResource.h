@@ -83,6 +83,7 @@ public:
     // the commands that reference it.  So each frame needs their own.
     std::unique_ptr<UploadBuffer<Vertex>> WavesVB = nullptr;
     std::unique_ptr<UploadBuffer<ScatterInstanceData>> ScatterInstanceBuffer = nullptr;
+    std::unique_ptr<UploadBuffer<ScatterInstanceData>> ShadowScatterInstanceBuffer = nullptr;
 
     // Fence value to mark commands up to this fence point.  This lets us
     // check if these frame resources are still in use by the GPU.

@@ -23,6 +23,11 @@ cbuffer cbParticleUpdate : register(b0)
     float gEmissionRate;
     float gMaxParticles;
     float gSpawnRadius;
+    float2 gParticleUpdatePad;
+    float3 gObstacleCenter;
+    float gObstaclePad0;
+    float3 gObstacleExtents;
+    float gObstaclePad1;
 };
 
 float Hash11(float n)
@@ -44,7 +49,33 @@ void CS(uint3 dispatchThreadID : SV_DispatchThreadID)
 
         if (particle.Age < particle.LifeTime)
         {
+            float3 previousPosition = particle.Position;
             particle.Position += particle.Velocity * gDeltaTime;
+
+            float3 obstacleMin = gObstacleCenter - gObstacleExtents;
+            float3 obstacleMax = gObstacleCenter + gObstacleExtents;
+            bool insideObstacleXZ =
+                particle.Position.x >= obstacleMin.x && particle.Position.x <= obstacleMax.x &&
+                particle.Position.z >= obstacleMin.z && particle.Position.z <= obstacleMax.z;
+            bool hitsObstacleBottom =
+                insideObstacleXZ &&
+                particle.Position.y >= obstacleMin.y &&
+                previousPosition.y <= obstacleMin.y + 0.03f;
+
+            if (hitsObstacleBottom)
+            {
+                float2 awayFromCenter = particle.Position.xz - gObstacleCenter.xz;
+                if (dot(awayFromCenter, awayFromCenter) < 0.0001f)
+                {
+                    float angle = Hash11(particle.Age * 91.0f + particle.LifeTime * 37.0f) * 6.2831853f;
+                    awayFromCenter = float2(cos(angle), sin(angle));
+                }
+
+                particle.Position.y = obstacleMin.y - 0.03f;
+                particle.Velocity.y = 0.0f;
+                particle.Velocity.xz += normalize(awayFromCenter) * 0.42f;
+            }
+
             particle.Velocity += float3(0.0f, 0.6f, 0.0f) * gDeltaTime;
             particle.Color.rgb *= 0.992f;
             gParticlesDirectOut[outCount] = particle;
@@ -71,7 +102,7 @@ void CS(uint3 dispatchThreadID : SV_DispatchThreadID)
             lerp(-0.7f, 0.7f, Hash11(seed + 29.0f)),
             lerp(2.8f, 4.4f, Hash11(seed + 53.0f)),
             lerp(-0.7f, 0.7f, Hash11(seed + 71.0f)));
-        particle.LifeTime = lerp(1.4f, 2.2f, Hash11(seed + 89.0f));
+        particle.LifeTime = lerp(2.8f, 4.2f, Hash11(seed + 89.0f));
         particle.Color = float4(
             lerp(0.98f, 1.00f, Hash11(seed + 101.0f)),
             lerp(0.55f, 0.85f, Hash11(seed + 131.0f)),
