@@ -233,7 +233,10 @@ private:
 	void BuildDescriptorHeaps();
 	void BuildGBufferDescriptorHeaps();
 	void BuildCascadedShadowMap();
+	void BuildPostProcessResources();
+	void BuildPostProcessDescriptors();
 	void BuildDebugRootSignature();
+	void BuildPostProcessRootSignature();
 	void BuildParticleUpdateRootSignature();
 	void BuildParticleDrawRootSignature();
 	void BuildShadersAndInputLayout();
@@ -256,6 +259,11 @@ private:
 	void BuildRenderItems();
 	void DrawSceneToShadowMap();
 	void DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems, bool shadowPass = false);
+	void DrawPostProcess(
+		ID3D12GraphicsCommandList* cmdList,
+		ID3D12PipelineState* pso,
+		CD3DX12_GPU_DESCRIPTOR_HANDLE inputSrv,
+		D3D12_CPU_DESCRIPTOR_HANDLE outputRtv);
 	void BuildInstancedRootSignature();
 	void UpdateScatterInstanceData();
 	void DrawScatterInstances(ID3D12GraphicsCommandList* cmdList);
@@ -295,8 +303,10 @@ private:
 
 	ComPtr<ID3D12DescriptorHeap> mGBufferRtvHeap = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mGBufferDsvHeap = nullptr;
+	ComPtr<ID3D12DescriptorHeap> mPostProcessRtvHeap = nullptr;
 
 	ComPtr<ID3D12RootSignature> mDebugRootSignature = nullptr;
+	ComPtr<ID3D12RootSignature> mPostProcessRootSignature = nullptr;
 	ComPtr<ID3D12RootSignature> mParticleUpdateRootSignature = nullptr;
 	ComPtr<ID3D12RootSignature> mParticleDrawRootSignature = nullptr;
 
@@ -352,8 +362,13 @@ private:
 	UINT mGBufferSrvHeapOffset = 0;
 	UINT mParticleUavHeapOffset = 0;
 	UINT mShadowMapSrvHeapOffset = 0;
+	UINT mPostProcessSrvHeapOffset = 0;
 	ComPtr<ID3D12DescriptorHeap> mShadowDsvHeap = nullptr;
 	std::unique_ptr<CascadedShadowMap> mCascadedShadowMap = nullptr;
+	std::array<ComPtr<ID3D12Resource>, 2> mPostProcessMaps;
+	std::array<CD3DX12_CPU_DESCRIPTOR_HANDLE, 2> mPostProcessRtvs;
+	std::array<CD3DX12_CPU_DESCRIPTOR_HANDLE, 2> mPostProcessSrvsCpu;
+	std::array<CD3DX12_GPU_DESCRIPTOR_HANDLE, 2> mPostProcessSrvsGpu;
 
 	std::vector<DirectX::XMFLOAT3> mGarlandColors;
 	BoundingFrustum mCameraFrustum;
@@ -449,14 +464,17 @@ bool TexWavesApp::Initialize()
 	BuildRootSignature();
 	BuildInstancedRootSignature();
 	BuildDebugRootSignature();
+	BuildPostProcessRootSignature();
 	BuildParticleUpdateRootSignature();
 	BuildParticleDrawRootSignature();
 	BuildLightingRootSignature();
 	BuildParticleResources();
 	BuildCascadedShadowMap();
+	BuildPostProcessResources();
 
 	BuildDescriptorHeaps();
 	BuildGBufferDescriptorHeaps();
+	BuildPostProcessDescriptors();
 
 	BuildShadersAndInputLayout();
 	BuildLandGeometry();
@@ -500,6 +518,11 @@ void TexWavesApp::OnResize()
 	if (mRenderingSystem)
 	{
 		mRenderingSystem->OnResize(mClientWidth, mClientHeight);
+	}
+	if (md3dDevice != nullptr && mSrvDescriptorHeap != nullptr && mPostProcessRtvHeap != nullptr)
+	{
+		BuildPostProcessResources();
+		BuildPostProcessDescriptors();
 	}
 }
 
@@ -579,12 +602,12 @@ void TexWavesApp::Draw(const GameTimer& gt)
 	gbuffer.TransitionToRead(mCommandList.Get());
 
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-		CurrentBackBuffer(),
-		D3D12_RESOURCE_STATE_PRESENT,
+		mPostProcessMaps[0].Get(),
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
 		D3D12_RESOURCE_STATE_RENDER_TARGET));
 
-	mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::Black, 0, nullptr);
-	mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, nullptr);
+	mCommandList->ClearRenderTargetView(mPostProcessRtvs[0], Colors::Black, 0, nullptr);
+	mCommandList->OMSetRenderTargets(1, &mPostProcessRtvs[0], true, nullptr);
 
 	mCommandList->SetPipelineState(mPSOs["deferredLighting"].Get());
 	mCommandList->SetGraphicsRootSignature(mLightingRootSignature.Get());
@@ -605,12 +628,46 @@ void TexWavesApp::Draw(const GameTimer& gt)
 		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
 		D3D12_RESOURCE_STATE_DEPTH_READ));
 	D3D12_CPU_DESCRIPTOR_HANDLE particleDepth = gbuffer.GetDsv();
-	mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &particleDepth);
+	mCommandList->OMSetRenderTargets(1, &mPostProcessRtvs[0], true, &particleDepth);
 	DrawParticles(mCommandList.Get());
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
 		gbuffer.GetDepthBuffer(),
 		D3D12_RESOURCE_STATE_DEPTH_READ,
 		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mPostProcessMaps[0].Get(),
+		D3D12_RESOURCE_STATE_RENDER_TARGET,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mPostProcessMaps[1].Get(),
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+		D3D12_RESOURCE_STATE_RENDER_TARGET));
+
+	mCommandList->ClearRenderTargetView(mPostProcessRtvs[1], Colors::Black, 0, nullptr);
+	DrawPostProcess(
+		mCommandList.Get(),
+		mPSOs["edgeDetection"].Get(),
+		mPostProcessSrvsGpu[0],
+		mPostProcessRtvs[1]);
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mPostProcessMaps[1].Get(),
+		D3D12_RESOURCE_STATE_RENDER_TARGET,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		CurrentBackBuffer(),
+		D3D12_RESOURCE_STATE_PRESENT,
+		D3D12_RESOURCE_STATE_RENDER_TARGET));
+
+	mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::Black, 0, nullptr);
+	DrawPostProcess(
+		mCommandList.Get(),
+		mPSOs["vcrFilter"].Get(),
+		mPostProcessSrvsGpu[1],
+		CurrentBackBufferView());
 
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
 		CurrentBackBuffer(),
@@ -1371,6 +1428,44 @@ void TexWavesApp::BuildDebugRootSignature()
 		IID_PPV_ARGS(mDebugRootSignature.GetAddressOf())));
 }
 
+void TexWavesApp::BuildPostProcessRootSignature()
+{
+	CD3DX12_DESCRIPTOR_RANGE texTable;
+	texTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+
+	CD3DX12_ROOT_PARAMETER slotRootParameter[2];
+	slotRootParameter[0].InitAsDescriptorTable(1, &texTable, D3D12_SHADER_VISIBILITY_PIXEL);
+	slotRootParameter[1].InitAsConstantBufferView(0);
+
+	auto staticSamplers = GetStaticSamplers();
+
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
+		2,
+		slotRootParameter,
+		(UINT)staticSamplers.size(),
+		staticSamplers.data(),
+		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+	ComPtr<ID3DBlob> serializedRootSig = nullptr;
+	ComPtr<ID3DBlob> errorBlob = nullptr;
+	HRESULT hr = D3D12SerializeRootSignature(
+		&rootSigDesc,
+		D3D_ROOT_SIGNATURE_VERSION_1,
+		serializedRootSig.GetAddressOf(),
+		errorBlob.GetAddressOf());
+
+	if (errorBlob != nullptr)
+		::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+
+	ThrowIfFailed(hr);
+
+	ThrowIfFailed(md3dDevice->CreateRootSignature(
+		0,
+		serializedRootSig->GetBufferPointer(),
+		serializedRootSig->GetBufferSize(),
+		IID_PPV_ARGS(mPostProcessRootSignature.GetAddressOf())));
+}
+
 void TexWavesApp::BuildInstancedRootSignature()
 {
 	CD3DX12_ROOT_PARAMETER slotRootParameter[3];
@@ -1586,9 +1681,10 @@ void TexWavesApp::BuildDescriptorHeaps()
 	mParticleUavHeapOffset = (UINT)mOrderedTextureNames.size();
 	mGBufferSrvHeapOffset = mParticleUavHeapOffset + 2;
 	mShadowMapSrvHeapOffset = mGBufferSrvHeapOffset + 4;
+	mPostProcessSrvHeapOffset = mShadowMapSrvHeapOffset + 1;
 
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-	srvHeapDesc.NumDescriptors = mShadowMapSrvHeapOffset + 1; // textures + particle UAVs + GBuffer SRVs + cascaded shadow map
+	srvHeapDesc.NumDescriptors = mPostProcessSrvHeapOffset + 2; // textures + particle UAVs + GBuffer SRVs + shadow map + post maps
 	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
@@ -1689,6 +1785,86 @@ void TexWavesApp::BuildGBufferDescriptorHeaps()
 		mDsvDescriptorSize);
 }
 
+void TexWavesApp::BuildPostProcessResources()
+{
+	for (auto& map : mPostProcessMaps)
+		map.Reset();
+
+	D3D12_RESOURCE_DESC texDesc = {};
+	texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	texDesc.Alignment = 0;
+	texDesc.Width = mClientWidth;
+	texDesc.Height = mClientHeight;
+	texDesc.DepthOrArraySize = 1;
+	texDesc.MipLevels = 1;
+	texDesc.Format = mBackBufferFormat;
+	texDesc.SampleDesc.Count = 1;
+	texDesc.SampleDesc.Quality = 0;
+	texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+	D3D12_CLEAR_VALUE optClear = {};
+	optClear.Format = mBackBufferFormat;
+	optClear.Color[0] = 0.0f;
+	optClear.Color[1] = 0.0f;
+	optClear.Color[2] = 0.0f;
+	optClear.Color[3] = 1.0f;
+
+	for (int i = 0; i < 2; ++i)
+	{
+		ThrowIfFailed(md3dDevice->CreateCommittedResource(
+			&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+			D3D12_HEAP_FLAG_NONE,
+			&texDesc,
+			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+			&optClear,
+			IID_PPV_ARGS(&mPostProcessMaps[i])));
+	}
+}
+
+void TexWavesApp::BuildPostProcessDescriptors()
+{
+	if (mPostProcessRtvHeap == nullptr)
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+		rtvHeapDesc.NumDescriptors = 2;
+		rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+		rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+		rtvHeapDesc.NodeMask = 0;
+		ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&mPostProcessRtvHeap)));
+	}
+
+	for (int i = 0; i < 2; ++i)
+	{
+		mPostProcessRtvs[i] = CD3DX12_CPU_DESCRIPTOR_HANDLE(
+			mPostProcessRtvHeap->GetCPUDescriptorHandleForHeapStart(),
+			i,
+			mRtvDescriptorSize);
+
+		md3dDevice->CreateRenderTargetView(mPostProcessMaps[i].Get(), nullptr, mPostProcessRtvs[i]);
+
+		mPostProcessSrvsCpu[i] = CD3DX12_CPU_DESCRIPTOR_HANDLE(
+			mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+			mPostProcessSrvHeapOffset + i,
+			mCbvSrvDescriptorSize);
+
+		mPostProcessSrvsGpu[i] = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+			mPostProcessSrvHeapOffset + i,
+			mCbvSrvDescriptorSize);
+
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srvDesc.Format = mBackBufferFormat;
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.MipLevels = 1;
+		srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+		md3dDevice->CreateShaderResourceView(mPostProcessMaps[i].Get(), &srvDesc, mPostProcessSrvsCpu[i]);
+	}
+}
+
 void TexWavesApp::BuildCascadedShadowMap()
 {
 	mCascadedShadowMap = std::make_unique<CascadedShadowMap>(
@@ -1717,6 +1893,9 @@ void TexWavesApp::BuildShadersAndInputLayout()
 
 	mShaders["debugVS"] = d3dUtil::CompileShader(L"Shaders\\DebugGBuffer.hlsl", nullptr, "VS", "vs_5_0");
 	mShaders["debugPS"] = d3dUtil::CompileShader(L"Shaders\\DebugGBuffer.hlsl", nullptr, "PS", "ps_5_0");
+	mShaders["postVS"] = d3dUtil::CompileShader(L"Shaders\\EdgeDetection.hlsl", nullptr, "VS", "vs_5_0");
+	mShaders["edgePS"] = d3dUtil::CompileShader(L"Shaders\\EdgeDetection.hlsl", nullptr, "PS", "ps_5_0");
+	mShaders["vcrPS"] = d3dUtil::CompileShader(L"Shaders\\VCRFilter.hlsl", nullptr, "PS", "ps_5_0");
 	mShaders["instancedGBufferVS"] = d3dUtil::CompileShader(L"Shaders\\InstancedDeferred.hlsl", nullptr, "VS", "vs_5_0");
 	mShaders["instancedGBufferPS"] = d3dUtil::CompileShader(L"Shaders\\InstancedDeferred.hlsl", nullptr, "PS", "ps_5_0");
 	mShaders["particleUpdateCS"] = d3dUtil::CompileShader(L"Shaders\\ParticleUpdate.hlsl", nullptr, "CS", "cs_5_0");
@@ -2613,6 +2792,33 @@ void TexWavesApp::BuildPSOs()
 		&debugPsoDesc,
 		IID_PPV_ARGS(&mPSOs["debugGBuffer"])));
 
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC postPsoDesc = debugPsoDesc;
+	postPsoDesc.pRootSignature = mPostProcessRootSignature.Get();
+	postPsoDesc.VS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["postVS"]->GetBufferPointer()),
+		mShaders["postVS"]->GetBufferSize()
+	};
+	postPsoDesc.PS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["edgePS"]->GetBufferPointer()),
+		mShaders["edgePS"]->GetBufferSize()
+	};
+
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+		&postPsoDesc,
+		IID_PPV_ARGS(&mPSOs["edgeDetection"])));
+
+	postPsoDesc.PS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["vcrPS"]->GetBufferPointer()),
+		mShaders["vcrPS"]->GetBufferSize()
+	};
+
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+		&postPsoDesc,
+		IID_PPV_ARGS(&mPSOs["vcrFilter"])));
+
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC particlePsoDesc = {};
 	ZeroMemory(&particlePsoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
 	particlePsoDesc.InputLayout = { nullptr, 0 };
@@ -2861,6 +3067,25 @@ void TexWavesApp::DrawSceneToShadowMap()
 
 	mCommandList->RSSetViewports(1, &mScreenViewport);
 	mCommandList->RSSetScissorRects(1, &mScissorRect);
+}
+
+void TexWavesApp::DrawPostProcess(
+	ID3D12GraphicsCommandList* cmdList,
+	ID3D12PipelineState* pso,
+	CD3DX12_GPU_DESCRIPTOR_HANDLE inputSrv,
+	D3D12_CPU_DESCRIPTOR_HANDLE outputRtv)
+{
+	auto passCB = mCurrFrameResource->PassCB->Resource();
+
+	cmdList->OMSetRenderTargets(1, &outputRtv, true, nullptr);
+	cmdList->SetPipelineState(pso);
+	cmdList->SetGraphicsRootSignature(mPostProcessRootSignature.Get());
+	cmdList->SetGraphicsRootDescriptorTable(0, inputSrv);
+	cmdList->SetGraphicsRootConstantBufferView(1, passCB->GetGPUVirtualAddress());
+	cmdList->IASetVertexBuffers(0, 0, nullptr);
+	cmdList->IASetIndexBuffer(nullptr);
+	cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	cmdList->DrawInstanced(3, 1, 0, 0);
 }
 
 void TexWavesApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems, bool shadowPass)
